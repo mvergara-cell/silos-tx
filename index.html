@@ -369,7 +369,7 @@ input[type=file]{padding:8px;background:var(--sunk)}
 </div>
 <div class="sheet-bg" id="sheet-bg" hidden><aside class="sheet" id="sheet" role="dialog" aria-modal="true"></aside></div>
 <div class="toast" id="toast" hidden></div>
-<datalist id="dl-comunas"></datalist><datalist id="dl-vendedores"></datalist><datalist id="dl-clientes"></datalist><datalist id="dl-tecnicos"></datalist><datalist id="dl-repuestos"></datalist>
+<datalist id="dl-comunas"></datalist><datalist id="dl-vendedores"></datalist><datalist id="dl-clientes"></datalist><datalist id="dl-ruts"></datalist><datalist id="dl-tecnicos"></datalist><datalist id="dl-repuestos"></datalist>
 <datalist id="dl-material"><option value="Mortero de pega"><option value="Estuco"><option value="Estuco hidrófugo"><option value="Hormigón seco"><option value="Pega baldosas"><option value="Adhesivo cerámico"></datalist>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
@@ -454,7 +454,7 @@ function recompute(){
   S.info = new Map();
   for(const s of S.silos){
     const evs = evBy.get(s.id) || [];
-    const sol = S.sols.find(x => x.estado==='Instalada' && x.siloId===s.id) || null;
+    const sol = S.sols.find(x => x.estado==='Instalada' && solHas(x, s.id)) || null;
     const open = new Map(); let cond = 'Operativo';
     const cnt = { fallas:0, rep:0, mant:0, insp:0, visitas:0, imput:0 };
     const g = { rep:0, mo:0, total:0 };
@@ -471,10 +471,10 @@ function recompute(){
       }
       if(e.tipo==='Inspección'){ cnt.insp++; lastMant = lastMant && lastMant.fecha > e.fecha ? lastMant : e; }
     }
-    const stays = S.sols.filter(x => x.siloId===s.id && x.fechaInstalacion);
+    const stays = S.sols.filter(x => solHas(x, s.id) && x.fechaInstalacion);
     const diasAcum = stays.reduce((a,x) => a + daysBetween(x.fechaInstalacion, x.fechaRetiro || today()), 0);
     const ubic = s.activo===false ? 'De baja' : sol ? 'En obra' : 'En planta';
-    S.info.set(s.id, { s, sol, evs, cond: s.activo===false ? 'De baja' : cond, ubic, fallasAbiertas:[...open.values()], cnt, g,
+    S.info.set(s.id, { s, sol, prod: siloProd(sol, s.id), evs, cond: s.activo===false ? 'De baja' : cond, ubic, fallasAbiertas:[...open.values()], cnt, g,
       dias: sol && sol.fechaInstalacion ? daysBetween(sol.fechaInstalacion, today()) : null, diasAcum, instalaciones: stays.length,
       lastVisit, lastPhotos, lastMant });
   }
@@ -483,6 +483,15 @@ const infos = () => [...S.info.values()];
 const activeInfos = () => infos().filter(i => i.ubic!=='De baja');
 const siloCode = id => S.silos.find(s => s.id===id)?.codigo || '(silo eliminado)';
 const solById = id => S.sols.find(s => s.id===id);
+const solSilos = x => (x && Array.isArray(x.siloIds) && x.siloIds.length) ? x.siloIds : (x && x.siloId ? [x.siloId] : []);
+const solHas = (x, id) => solSilos(x).includes(id);
+const prodTxt = s => Array.isArray(s?.productos) ? s.productos.map(p => `${p.codigo} · ${p.descripcion||''}`).join(' + ') : (s?.productos || '');
+const prodCodes = s => Array.isArray(s?.productos) ? s.productos.map(p => p.codigo + (p.cantidadSilos ? ` ×${p.cantidadSilos}` : '')).join(' + ') : (s?.productos || '');
+const siloProd = (sol, id) => { const c = sol?.siloProducto?.[id]; if(!c) return null; return (Array.isArray(sol.productos) && sol.productos.find(p => p.codigo===c)) || { codigo:c }; };
+function prodTable(s){
+  if(!Array.isArray(s?.productos) || !s.productos.length) return '';
+  return `<div class="tbl-wrap"><table><thead><tr><th>Producto</th><th class="r">Silos</th><th class="r">Consumo t/mes</th><th class="r">Duración</th><th>Requerido</th></tr></thead><tbody>${s.productos.map(p => `<tr><td><b class="mono">${esc(p.codigo)}</b><div class="sub">${esc(p.descripcion||'')}</div></td><td class="r num">${esc(p.cantidadSilos ?? '–')}</td><td class="r num">${esc(p.consumo || '–')}</td><td class="r num">${p.duracion ? esc(p.duracion) + ' meses' : '–'}</td><td class="sub">${p.fechaRequerida ? fmtD(p.fechaRequerida) : '–'}</td></tr>`).join('')}</tbody></table></div>`;
+}
 
 /* ================= geo ================= */
 let geoPromise = null;
@@ -512,6 +521,12 @@ function makeMap(el, opts={}){
   m.attributionControl.setPrefix('');
   m.setView(opts.center || [-33.47,-70.65], opts.zoom || (opts.mini ? 9 : 10));
   const calles = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom:19, className:'tiles-calles', attribution:'© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>' }).addTo(m);
+  // Respaldo: si OpenStreetMap bloquea las teselas (red corporativa, archivo abierto sin servidor), usa el mapa de calles de Esri
+  let tileErr = 0, swapped = false;
+  calles.on('tileerror', () => { if(swapped || ++tileErr < 3) return; swapped = true;
+    calles.setUrl('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}');
+    m.attributionControl.removeAttribution(calles.getAttribution()); calles.options.attribution = 'Mapa © Esri'; m.attributionControl.addAttribution('Mapa © Esri'); });
+  if(window.ResizeObserver){ const ro = new ResizeObserver(() => { if(!m._dead) m.invalidateSize(); }); ro.observe(el); m.on('unload', () => ro.disconnect()); }
   const sat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom:19, attribution:'Imágenes © Esri' });
   if(!opts.mini){
     const Ctl = L.Control.extend({ onAdd(){ const d = L.DomUtil.create('div','seg-f map-layers'); d.innerHTML = '<button type="button" aria-pressed="true" data-l="c">Calles</button><button type="button" aria-pressed="false" data-l="s">Satélite</button>';
@@ -745,7 +760,7 @@ function renderSolicitudes(){
     $('#sol-q').addEventListener('input', e => { S.f.solQ = e.target.value; renderSolicitudes(); });
   }
   const q = norm(S.f.solQ);
-  const list = S.sols.filter(s => !q || norm([s.obra,s.cliente,s.vendedor,s.comuna,s.codigo].join(' ')).includes(q));
+  const list = S.sols.filter(s => !q || norm([s.obra,s.cliente,s.rut,s.vendedor,s.comuna,s.codigo].join(' ')).includes(q));
   if(!S.sols.length && loaded()){
     $('#kanban').style.display = 'block';
     $('#kanban').innerHTML = `<div class="card empty"><b>Aún no hay solicitudes</b>El vendedor crea la solicitud con la obra, el cliente y el consumo estimado. Luego se evalúa la prefactibilidad y se instala el silo.<br><button class="btn primary" data-act="new-sol">${I.plus}Nueva solicitud</button></div>`;
@@ -760,7 +775,7 @@ function renderSolicitudes(){
   }).join('');
 }
 function solCard(s){
-  const i = s.siloId ? S.info.get(s.siloId) : null;
+  const ids = solSilos(s); const i = ids.length ? S.info.get(ids[0]) : null;
   let act = '';
   if(s.estado==='Solicitada' && can('eval')) act = `<button class="btn sm primary" data-sol-act="prefact" data-id="${esc(s.id)}">${I.doc}Evaluar</button>`;
   if(s.estado==='Aprobada' && can('tec')) act = `<button class="btn sm primary" data-sol-act="instalar" data-id="${esc(s.id)}">${I.truck}Instalar silo</button>`;
@@ -769,15 +784,15 @@ function solCard(s){
   return `<div class="sol" data-open-sol="${esc(s.id)}" tabindex="0">
     <div class="top"><b>${esc(s.obra)}</b><span class="mono sub">${esc(s.codigo||'')}</span></div>
     <span class="sub">${esc(s.cliente)}${s.comuna?' · '+esc(s.comuna):''}</span>
-    <div class="meta">${s.siloId ? `<span class="chip plain mono">${esc(siloCode(s.siloId))}</span>` : ''}${i && s.estado==='Instalada' ? condChip(i.cond) : ''}${dias!=null ? `<span class="chip plain">${dias} días</span>` : ''}${s.estado==='Anulada' ? '<span class="chip">Anulada</span>' : ''}${s.prefact?.resultado==='Aprobada con condiciones' && s.estado==='Aprobada' ? '<span class="chip warn">Con condiciones</span>' : ''}</div>
-    <span class="sub">Vendedor: ${esc(s.vendedor||'–')}${s.consumo ? ` · ${esc(s.consumo)} ton/mes` : ''}</span>
+    <div class="meta">${ids.map(id => `<span class="chip plain mono">${esc(siloCode(id))}</span>`).join('')}${!ids.length && numRaw(s.cantidadSilos) > 1 ? `<span class="chip plain">${esc(s.cantidadSilos)} silos</span>` : ''}${i && s.estado==='Instalada' ? condChip(i.cond) : ''}${dias!=null ? `<span class="chip plain">${dias} días</span>` : ''}${s.estado==='Anulada' ? '<span class="chip">Anulada</span>' : ''}${s.prefact?.resultado==='Aprobada con condiciones' && s.estado==='Aprobada' ? '<span class="chip warn">Con condiciones</span>' : ''}</div>
+    <span class="sub">Vendedor: ${esc(s.vendedor||'–')}${s.consumo ? ` · ${esc(s.consumo)} t/mes total` : ''}</span>${prodCodes(s) ? `<span class="sub mono" style="font-size:11.5px">${esc(prodCodes(s))}</span>` : ''}
     ${act ? `<div class="act">${act}</div>` : ''}</div>`;
 }
 document.addEventListener('click', e => {
   const b = e.target.closest('[data-sol-act]'); if(!b) return;
   e.stopPropagation();
   const s = solById(b.dataset.id); if(!s) return;
-  ({ prefact:formPrefact, instalar:formInstalar, retirar:formRetiro, visita:() => { closeSheet(); go('registrar', { siloId:s.siloId }); } })[b.dataset.solAct](s);
+  ({ prefact:formPrefact, instalar:formInstalar, retirar:formRetiro, visita:() => { closeSheet(); go('registrar', { siloId:solSilos(s)[0] }); } })[b.dataset.solAct](s);
 }, true);
 document.addEventListener('keydown', e => { if(e.key==='Enter' && e.target.matches('.sol[data-open-sol]')) openSol(e.target.dataset.openSol); });
 
@@ -802,7 +817,7 @@ function renderSilos(){
   box.innerHTML = list.length ? `<div class="silos-grid">${list.map(i => `<button class="sc" data-open-silo="${esc(i.s.id)}">
     ${siloSVG(i.cond,'silo',i.s.codigo)}
     <div style="min-width:0"><div style="display:flex;justify-content:space-between;gap:6px;align-items:center"><span class="code">${esc(i.s.codigo)}</span>${ubicChip(i.ubic)}</div>
-      <div class="loc">${i.sol ? `${esc(i.sol.obra)} · ${esc(i.sol.cliente)}` : esc(i.s.planta || (i.ubic==='De baja' ? 'Fuera de servicio' : 'Disponible en planta'))}${i.s.capacidad ? ` · ${esc(i.s.capacidad)} ton` : ''}</div>
+      <div class="loc">${i.sol ? `${esc(i.sol.obra)} · ${esc(i.sol.cliente)}${i.prod ? ` · <span class="mono">${esc(i.prod.codigo)}</span>` : ''}` : esc(i.s.planta || (i.ubic==='De baja' ? 'Fuera de servicio' : 'Disponible en planta'))}${i.s.capacidad ? ` · ${esc(i.s.capacidad)} ton` : ''}</div>
       ${condChip(i.cond)}
       <div class="stats"><div><b>${i.dias ?? '–'}</b><small>días</small></div><div><b>${i.cnt.fallas}</b><small>fallas</small></div><div><b>${clpK(i.g.total)}</b><small>gasto</small></div></div>
     </div>
@@ -853,13 +868,13 @@ function openSilo(id){
     recompute();
     const i = S.info.get(id); if(!i){ closeSheet(); return; }
     const s = i.s, sol = i.sol, evs = i.evs.slice().reverse();
-    const stays = S.sols.filter(x => x.siloId===s.id && x.fechaInstalacion).sort((a,b) => (b.fechaInstalacion||'').localeCompare(a.fechaInstalacion||''));
+    const stays = S.sols.filter(x => solHas(x, s.id) && x.fechaInstalacion).sort((a,b) => (b.fechaInstalacion||'').localeCompare(a.fechaInstalacion||''));
     const ll = sol ? solLL(sol) : null;
     const sh = openSheet(esc(s.codigo), `
       <div class="ficha-top">${siloSVG(i.cond,'silo',s.codigo)}
         <div style="display:grid;gap:8px;min-width:0">
           <div style="display:flex;gap:6px;flex-wrap:wrap">${ubicChip(i.ubic)}${condChip(i.cond)}</div>
-          ${sol ? `<div><b style="font-size:16px">${esc(sol.obra)}</b><div class="sub">${esc(sol.cliente)} · ${esc([sol.direccion, sol.comuna].filter(Boolean).join(', '))}</div><div class="sub">Instalado ${fmtDL(sol.fechaInstalacion)} · Vendedor ${esc(sol.vendedor||'–')}</div></div>` : `<div class="sub">${esc(s.planta || 'En planta')}</div>`}
+          ${sol ? `<div><b style="font-size:16px">${esc(sol.obra)}</b><div class="sub">${esc(sol.cliente)} · ${esc([sol.direccion, sol.comuna].filter(Boolean).join(', '))}</div><div class="sub">Instalado ${fmtDL(sol.fechaInstalacion)} · Vendedor ${esc(sol.vendedor||'–')}</div>${i.prod ? `<div class="sub">Producto: <b class="mono">${esc(i.prod.codigo)}</b> ${esc(i.prod.descripcion||'')}</div>` : ''}</div>` : `<div class="sub">${esc(s.planta || 'En planta')}</div>`}
           <div class="sub">${[s.capacidad && s.capacidad + ' ton', s.modelo, s.serie && 'Serie ' + s.serie, s.anio].filter(Boolean).map(esc).join(' · ')}</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
             ${i.ubic!=='De baja' && can('tec') ? `<button class="btn sm primary" id="fx-reg">${I.wrench}Registrar visita</button>` : ''}
@@ -916,18 +931,18 @@ function openSol(id){
     const sh = openSheet(esc(s.obra), `
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">${['Solicitud','Prefactibilidad','Instalación','En obra','Retiro'].map((t,k) => `<span class="chip ${k < step || (k===4 && step===4) ? 'brand' : k===step ? 'info' : 'plain'}">${k+1}. ${t}</span>`).join('')}${s.estado==='Rechazada'?'<span class="chip bad">Rechazada</span>':''}${s.estado==='Anulada'?'<span class="chip">Anulada</span>':''}</div>
       <div class="facts">
-        <div><small>Cliente</small><b style="font-size:15px">${esc(s.cliente)}</b></div>
+        <div><small>Cliente</small><b style="font-size:15px">${esc(s.cliente)}</b>${s.rut ? `<div class="sub mono">${esc(s.rut)}</div>` : ''}</div>
         <div><small>Vendedor</small><b style="font-size:15px">${esc(s.vendedor||'–')}</b></div>
         <div><small>Comuna</small><b style="font-size:15px">${esc(s.comuna||'–')}</b></div>
-        <div><small>Consumo estimado</small><b>${s.consumo ? esc(s.consumo) + ' t/mes' : '–'}</b></div>
+        <div><small>Consumo estimado total</small><b>${s.consumo ? esc(s.consumo) + ' t/mes' : '–'}</b></div>
         <div><small>Duración estimada</small><b>${s.duracion ? esc(s.duracion) + ' meses' : '–'}</b></div>
         <div><small>Gasto en esta obra</small><b>${clpK(gasto)}</b></div>
       </div>
       <div class="block"><h3>Datos de la obra</h3><div class="card" style="padding:14px;display:grid;gap:6px">
         <div>${esc(s.direccion||'Sin dirección')}${s.comuna ? ', ' + esc(s.comuna) : ''} ${ll ? `· <a href="${gmaps(ll)}" target="_blank" rel="noopener">Abrir en Google Maps</a>` : ''}</div>
         ${s.contacto ? `<div>Contacto: ${esc(s.contacto)}</div>` : ''}
-        ${s.productos ? `<div>Productos granel: ${esc(s.productos)}</div>` : ''}
-        ${s.capacidad ? `<div>Capacidad requerida: ${esc(s.capacidad)} ton</div>` : ''}
+        ${Array.isArray(s.productos) && s.productos.length ? prodTable(s) : prodTxt(s) ? `<div>Productos: <b>${esc(prodTxt(s))}</b></div>` : ''}
+        ${!Array.isArray(s.productos) && s.capacidad ? `<div>Capacidad requerida: ${esc(s.capacidad)} ton</div>` : ''}
         ${s.fechaRequerida ? `<div>Requerido para: ${fmtDL(s.fechaRequerida)}</div>` : ''}
         ${s.obs ? `<div class="sub">${esc(s.obs)}</div>` : ''}
         <div class="sub">Creada ${fmtD((s.creadoEn||'').slice(0,10))} · ${esc(s.codigo||'')}</div></div></div>
@@ -935,7 +950,7 @@ function openSol(id){
         <div class="sub">${fmtDL(p.fecha)} · evaluó ${esc(p.evaluador)}</div>
         <div class="fg" style="gap:6px 16px">${[['Acceso camión granel',p.acceso],['Terreno / base',p.terreno],['Espacio',p.espacio],['Energía eléctrica',p.energia],['Agua',p.agua],['Distancia a punto de uso',p.distancia ? p.distancia + ' m' : '']].filter(x => x[1]).map(x => `<div><span class="sub">${x[0]}</span><div><b>${esc(x[1])}</b></div></div>`).join('')}</div>
         ${p.condiciones ? `<div>${esc(p.condiciones)}</div>` : ''}${photosHTML(p.fotos)}</div></div>` : ''}
-      ${s.siloId ? `<div class="block"><h3>Silo asignado</h3><button class="sc" data-open-silo="${esc(s.siloId)}" style="grid-template-columns:62px minmax(0,1fr)">${siloSVG(S.info.get(s.siloId)?.cond||'Operativo','silo')}<div><span class="code">${esc(siloCode(s.siloId))}</span><div class="loc">Instalado ${fmtDL(s.fechaInstalacion)}${s.fechaRetiro ? ' · retirado ' + fmtDL(s.fechaRetiro) : ''}</div><div class="sub">${s.fechaInstalacion ? daysBetween(s.fechaInstalacion, s.fechaRetiro || today()) + ' días en obra' : ''}</div></div></button></div>` : ''}
+      ${solSilos(s).length ? `<div class="block"><h3>${solSilos(s).length > 1 ? 'Silos asignados' : 'Silo asignado'}</h3><div style="display:grid;gap:10px">${solSilos(s).map(id => `<button class="sc" data-open-silo="${esc(id)}" style="grid-template-columns:62px minmax(0,1fr)">${siloSVG(S.info.get(id)?.cond||'Operativo','silo')}<div><span class="code">${esc(siloCode(id))}</span><div class="loc">Instalado ${fmtDL(s.fechaInstalacion)}${s.fechaRetiro ? ' · retirado ' + fmtDL(s.fechaRetiro) : ''}</div><div class="sub">${s.fechaInstalacion ? daysBetween(s.fechaInstalacion, s.fechaRetiro || today()) + ' días en obra' : ''}</div></div></button>`).join('')}</div></div>` : ''}
       ${evs.length ? `<div class="block"><h3>Registros en esta obra</h3><ul class="tl">${evs.map(e => `<li style="--c:${EV_COLOR[e.tipo]}"><div class="h"><span>${esc(e.tipo)} · <span class="mono">${esc(siloCode(e.siloId))}</span></span><span class="sub">${fmtD(e.fecha)}</span></div>${evText(e)}${photosHTML(e.fotos)}</li>`).join('')}</ul></div>` : ''}
       <div class="actions block" id="sol-actions"></div>`, { eyebrow:`Solicitud ${esc(s.codigo||'')}`, refresh:() => { const st = $('#sheet').scrollTop; draw(); $('#sheet').scrollTop = st; } });
     const a = $('#sol-actions', sh);
@@ -949,7 +964,7 @@ function openSol(id){
     }
     if(s.estado==='Solicitada' && can('eval')) B(I.doc + 'Evaluar prefactibilidad', 'primary', () => formPrefact(s));
     if(s.estado==='Aprobada' && can('tec')) B(I.truck + 'Instalar silo', 'primary', () => formInstalar(s));
-    if(s.estado==='Instalada' && can('tec')){ B('Desinstalar', '', () => formRetiro(s)); B(I.wrench + 'Registrar visita', 'primary', () => { closeSheet(); go('registrar', { siloId:s.siloId }); }); }
+    if(s.estado==='Instalada' && can('tec')){ B('Desinstalar', '', () => formRetiro(s)); B(I.wrench + 'Registrar visita', 'primary', () => { closeSheet(); go('registrar', { siloId:solSilos(s)[0] }); }); }
   };
   draw();
 }
@@ -1009,8 +1024,6 @@ const stamp = () => ({ creadoEn:new Date().toISOString(), autorId:S.uid || null 
 function uniqList(arr){ return [...new Set(arr.filter(Boolean).map(x => String(x).trim()))].sort((a,b) => a.localeCompare(b,'es')); }
 function refreshDatalists(){
   const o = l => l.map(x => `<option value="${esc(x)}">`).join('');
-  $('#dl-vendedores').innerHTML = o(uniqList(S.sols.map(s => s.vendedor)));
-  $('#dl-clientes').innerHTML = o(uniqList(S.sols.map(s => s.cliente)));
   $('#dl-tecnicos').innerHTML = o(uniqList(S.evs.map(e => e.tecnico).concat(S.sols.map(s => s.prefact?.evaluador))));
   $('#dl-repuestos').innerHTML = o(uniqList(S.evs.flatMap(e => (e.repuestos||[]).map(r => r.d))));
 }
@@ -1040,12 +1053,33 @@ function picker(root, lat, lng, comunaInputId){
 const pickerHTML = () => `<div style="display:grid;gap:8px"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:space-between"><span class="sub" id="pk-note"></span><button type="button" class="btn sm" id="pk-gps">${I.pin}Usar mi ubicación</button></div><div class="picker" id="pk-map"></div>${fld('O pega coordenadas o enlace de Google Maps', '<input id="pk-paste" placeholder="-33.4372, -70.6506" autocomplete="off">')}</div>`;
 
 /* ================= SOLICITUD ================= */
+const normRut = r => { const t = String(r||'').toUpperCase().replace(/[^0-9K]/g,''); return t.length < 2 ? t : t.slice(0,-1) + '-' + t.slice(-1); };
+function rutOk(r){
+  const m = normRut(r).match(/^(\d{6,9})-([0-9K])$/); if(!m) return false;
+  let s = 0, k = 2; for(let i = m[1].length - 1; i >= 0; i--){ s += +m[1][i] * k; k = k === 7 ? 2 : k + 1; }
+  const d = 11 - (s % 11); return m[2] === (d === 11 ? '0' : d === 10 ? 'K' : String(d));
+}
+const fmtMes = d => { if(!d) return ''; const [y,m] = d.split('-'); return `${MESES[+m-1]} ${y}`; };
+function vendedorDefault(){
+  if(S.rol!=='vendedor' || !S.me) return '';
+  const n = norm(S.me.nombre); const v = (S.vendedores||[]).find(x => norm(x.nombre)===n) || (S.vendedores||[]).find(x => n && (norm(x.nombre).startsWith(n) || n.startsWith(norm(x.nombre))));
+  return v ? v.nombre : '';
+}
 function formSolicitud(s){
   const e = s || {};
+  const vends = (S.vendedores||[]).filter(v => v.activo);
+  const vSel = e.vendedor ?? vendedorDefault();
+  const vOpts = [['', 'Selecciona un vendedor'], ...vends.map(v => [v.nombre, `${v.nombre}${v.zona ? ' · ' + v.zona : ''}${v.tipo==='E-commerce' ? ' · E-commerce' : ''}`])];
+  if(vSel && !vends.some(v => v.nombre===vSel)) vOpts.push([vSel, vSel]);
+  const prods = (S.productos||[]).filter(p => p.activo);
+  const pOpts = first => [['', first], ...prods.map(p => [p.codigo, `${p.codigo} · ${p.descripcion}`])];
+  const eP = Array.isArray(e.productos) ? e.productos : [];
   const sh = openSheet(s ? 'Editar solicitud' : 'Nueva solicitud de silo', `
     <form class="form" id="fs" novalidate>
       <fieldset><legend>Vendedor y cliente</legend>
-        <div class="fg">${fld('Vendedor', inp('fs-vendedor', e.vendedor ?? (S.rol==='vendedor' ? S.me?.nombre : ''), 'list="dl-vendedores" autocomplete="off"'), 1)}${fld('Cliente (constructora)', inp('fs-cliente', e.cliente, 'list="dl-clientes" autocomplete="off"'), 1)}</div>
+        ${fld('Vendedor', sel('fs-vendedor', vOpts, vSel), 1)}
+        <div class="fg">${fld('RUT cliente', inp('fs-rut', e.rut, 'list="dl-ruts" autocomplete="off" placeholder="76.123.456-7" inputmode="text"'), 1)}${fld('Razón social', inp('fs-cliente', e.cliente, 'list="dl-clientes" autocomplete="off"'), 1)}</div>
+        <span class="sub" id="fs-cli-note">Escribe el RUT o la razón social: se completa con los clientes que compraron en 2025-2026.</span>
         <div class="fg">${fld('Obra / proyecto', inp('fs-obra', e.obra, 'autocomplete="off"'), 1)}${fld('Contacto en obra (nombre y teléfono)', inp('fs-contacto', e.contacto, 'autocomplete="off"'))}</div>
       </fieldset>
       <fieldset><legend>Ubicación</legend>
@@ -1053,28 +1087,49 @@ function formSolicitud(s){
         ${pickerHTML()}
       </fieldset>
       <fieldset><legend>Negocio granel</legend>
-        <div class="fg">${fld('Productos granel', inp('fs-productos', e.productos, 'list="dl-material" autocomplete="off" placeholder="Ej. mortero de pega, estuco"'))}${fld('Consumo estimado (ton/mes)', inp('fs-consumo', e.consumo, 'type="number" min="0" step="any" inputmode="decimal"'))}</div>
-        <div class="fg3">${fld('Duración estimada (meses)', inp('fs-duracion', e.duracion, 'type="number" min="0" step="any" inputmode="decimal"'))}${fld('Fecha requerida', inp('fs-fecha', e.fechaRequerida, 'type="date"'))}${fld('Capacidad silo (ton)', inp('fs-capacidad', e.capacidad, 'type="number" min="0" step="any" inputmode="decimal"'))}</div>
+        ${[0,1].map(k => `<div class="card" style="padding:14px;display:grid;gap:12px;background:var(--bg)" id="fs-pb${k}">
+          ${fld(k ? 'Producto 2 (opcional)' : 'Producto 1', sel('fs-prod' + k, pOpts(k ? 'Ninguno' : 'Selecciona un producto'), eP[k]?.codigo || ''), !k)}
+          <div class="fg" data-pf="${k}"${!k || eP[k] ? '' : ' hidden'}>${fld('Cantidad de silos', inp('fs-cant' + k, eP[k]?.cantidadSilos ?? (k ? 1 : (e.cantidadSilos && !eP.length ? e.cantidadSilos : 1)), 'type="number" min="1" max="10" step="1" inputmode="numeric"'), 1)}${fld('Consumo estimado (ton/mes)', inp('fs-cons' + k, eP[k]?.consumo ?? (!k && !eP.length ? e.consumo : ''), 'type="number" min="0" step="any" inputmode="decimal"'))}</div>
+          <div class="fg" data-pf="${k}"${!k || eP[k] ? '' : ' hidden'}>${fld('Duración estimada (meses)', inp('fs-dur' + k, eP[k]?.duracion ?? (!k && !eP.length ? e.duracion : ''), 'type="number" min="0" step="any" inputmode="decimal"'))}${fld('Fecha requerida', inp('fs-fec' + k, eP[k]?.fechaRequerida ?? (!k && !eP.length ? e.fechaRequerida : ''), 'type="date"'))}</div>
+        </div>`).join('')}
         ${fld('Observaciones', ta('fs-obs', e.obs, 'Condiciones comerciales, plazos, accesos conocidos'))}
       </fieldset>
       <div class="ctx err" id="fs-err" hidden></div>
       <div class="actions"><button type="button" class="btn" id="fs-cancel">Cancelar</button><button class="btn primary" id="fs-save">${s ? 'Guardar cambios' : 'Enviar solicitud'}</button></div>
     </form>`, { eyebrow: s ? esc(s.codigo||'') : 'Paso 1 · Vendedor' });
-  loadGeo();
+  loadGeo(); loadClientLists();
   const pk = picker(sh, e.lat, e.lng, 'fs-comuna');
+  const rutI = $('#fs-rut', sh), cliI = $('#fs-cliente', sh), note = $('#fs-cli-note', sh);
+  const showCli = c => { note.innerHTML = c ? `Cliente registrado · compras ${esc(c.anios||'')}${c.ultima_compra ? ' · último despacho ' + fmtMes(c.ultima_compra) : ''}` : 'Cliente sin despachos 2025-2026: se registrará como cliente nuevo.'; };
+  rutI.addEventListener('change', () => { const r = normRut(rutI.value.split(' ')[0]); rutI.value = r; const c = S.cliByRut?.get(r); if(c){ cliI.value = c.razon_social; } showCli(c); });
+  cliI.addEventListener('change', () => { const n = norm(cliI.value); const c = (S.clientes||[]).find(x => norm(x.razon_social)===n); if(c){ rutI.value = c.rut; cliI.value = c.razon_social; } showCli(c); });
+  $('#fs-prod1', sh).addEventListener('change', ev => sh.querySelectorAll('[data-pf="1"]').forEach(x => x.hidden = !ev.target.value));
   $('#fs-cancel', sh).onclick = () => closeSheet();
   $('#fs', sh).addEventListener('submit', ev => { ev.preventDefault(); const btn = $('#fs-save', sh);
     submitting(btn, $('#fs-err', sh), async () => {
       need(S.db, 'La base de datos no está disponible.');
-      need(val('fs-vendedor', sh) && val('fs-cliente', sh) && val('fs-obra', sh), 'Completa vendedor, cliente y obra.');
+      need(val('fs-vendedor', sh), 'Selecciona el vendedor.');
+      const rut = normRut(val('fs-rut', sh)); need(rutOk(rut), 'El RUT del cliente no es válido. Revisa el dígito verificador.');
+      need(val('fs-cliente', sh) && val('fs-obra', sh), 'Completa razón social y obra.');
       need(val('fs-comuna', sh), 'Indica la comuna de la obra.');
+      const p0 = val('fs-prod0', sh), p1 = val('fs-prod1', sh);
+      need(p0, 'Selecciona al menos un producto.'); need(!p1 || p1 !== p0, 'Los dos productos deben ser distintos.');
+      const prods = [];
+      for(const [k, c] of [[0, p0], [1, p1]]){
+        if(!c) continue;
+        const cant = parseInt(val('fs-cant' + k, sh), 10); need(cant >= 1 && cant <= 10, `La cantidad de silos de ${c} debe estar entre 1 y 10.`);
+        const p = (S.productos||[]).find(x => x.codigo===c);
+        prods.push({ codigo:c, descripcion:p ? p.descripcion : '', cantidadSilos:cant, consumo:val('fs-cons' + k, sh), duracion:val('fs-dur' + k, sh), fechaRequerida:val('fs-fec' + k, sh) });
+      }
+      const sum = f => prods.reduce((a,p) => a + numRaw(p[f]), 0);
+      const fechas = prods.map(p => p.fechaRequerida).filter(Boolean).sort();
       const [lat, lng] = pk.get();
-      const d = { vendedor:val('fs-vendedor',sh), cliente:val('fs-cliente',sh), obra:val('fs-obra',sh), contacto:val('fs-contacto',sh), direccion:val('fs-direccion',sh), comuna:val('fs-comuna',sh),
-        lat:lat, lng:lng, productos:val('fs-productos',sh), consumo:val('fs-consumo',sh), duracion:val('fs-duracion',sh), fechaRequerida:val('fs-fecha',sh), capacidad:val('fs-capacidad',sh), obs:val('fs-obs',sh) };
+      const d = { vendedor:val('fs-vendedor',sh), rut, cliente:val('fs-cliente',sh), clienteNuevo: !S.cliByRut?.has(rut), obra:val('fs-obra',sh), contacto:val('fs-contacto',sh), direccion:val('fs-direccion',sh), comuna:val('fs-comuna',sh),
+        lat:lat, lng:lng, productos:prods, cantidadSilos:sum('cantidadSilos'), consumo: sum('consumo') ? String(sum('consumo')) : '', duracion: prods.some(p => p.duracion) ? String(Math.max(...prods.map(p => numRaw(p.duracion)))) : '', fechaRequerida: fechas[0] || '', obs:val('fs-obs',sh) };
       if(s){ await S.db.doc('solicitudes/' + s.id).update(d); toast('Solicitud actualizada'); openSol(s.id); }
       else {
         const max = S.sols.reduce((a,x) => Math.max(a, parseInt(String(x.codigo||'').replace(/\D/g,''),10) || 0), 0);
-        const ref = await S.db.collection('solicitudes').add({ ...d, codigo:'SOL-' + String(max+1).padStart(4,'0'), estado:'Solicitada', ...stamp() });
+        await S.db.collection('solicitudes').add({ ...d, codigo:'SOL-' + String(max+1).padStart(4,'0'), estado:'Solicitada', ...stamp() });
         toast('Solicitud enviada a evaluación'); closeSheet(); if(S.view!=='solicitudes') go('solicitudes');
       }
     });
@@ -1084,7 +1139,7 @@ function formSolicitud(s){
 /* ================= PREFACTIBILIDAD ================= */
 function formPrefact(s){
   const sh = openSheet('Prefactibilidad', `
-    <div class="ctx" style="margin-bottom:14px"><b>${esc(s.obra)}</b> · ${esc(s.cliente)} · ${esc(s.comuna||'')} · solicitó ${esc(s.vendedor)}${s.consumo ? ` · ${esc(s.consumo)} t/mes` : ''}</div>
+    <div class="ctx" style="margin-bottom:14px"><b>${esc(s.obra)}</b> · ${esc(s.cliente)}${s.rut ? ' (' + esc(s.rut) + ')' : ''} · ${esc(s.comuna||'')} · solicitó ${esc(s.vendedor)} · ${esc(s.cantidadSilos || 1)} silo(s)${prodCodes(s) ? ' · ' + esc(prodCodes(s)) : ''}${s.consumo ? ` · ${esc(s.consumo)} t/mes` : ''}</div>
     <form class="form" id="fp" novalidate>
       <fieldset><legend>Evaluación en terreno</legend>
         <div class="fg">${fld('Fecha de evaluación', inp('fp-fecha', today(), 'type="date"'), 1)}${fld('Evaluado por', inp('fp-eval', S.me?.nombre || '', 'list="dl-tecnicos" autocomplete="off"'), 1)}</div>
@@ -1118,50 +1173,64 @@ function formPrefact(s){
 /* ================= INSTALACIÓN ================= */
 function formInstalar(s){
   recompute();
+  const prodsI = Array.isArray(s.productos) && s.productos.length ? s.productos.map(p => ({ ...p, cantidadSilos: Math.max(1, parseInt(p.cantidadSilos,10) || (s.productos.length===1 ? parseInt(s.cantidadSilos,10) || 1 : 1)) })) : [{ codigo:'GRANEL', descripcion: prodTxt(s) || 'Material granel', cantidadSilos: Math.max(1, parseInt(s.cantidadSilos, 10) || 1) }];
+  const cant = prodsI.reduce((a,p) => a + p.cantidadSilos, 0);
   const disp = activeInfos().filter(i => i.ubic==='En planta').sort((a,b) => String(a.s.codigo).localeCompare(String(b.s.codigo),'es',{numeric:true}));
-  const sh = openSheet('Instalar silo', `
-    <div class="ctx" style="margin-bottom:14px"><b>${esc(s.obra)}</b> · ${esc(s.cliente)} · ${esc(s.comuna||'')}${s.capacidad ? ` · requiere ${esc(s.capacidad)} ton` : ''}</div>
+  const sh = openSheet(cant > 1 ? `Instalar ${cant} silos` : 'Instalar silo', `
+    <div class="ctx" style="margin-bottom:14px"><b>${esc(s.obra)}</b> · ${esc(s.cliente)} · ${esc(s.comuna||'')} · solicitados: <b>${cant}</b> silo(s)${prodCodes(s) ? ' · ' + esc(prodCodes(s)) : ''}</div>
     <form class="form" id="fi" novalidate>
-      <fieldset><legend>Silo y montaje</legend>
-        ${disp.length ? fld('Silo a instalar (disponibles en planta)', sel('fi-silo', [['', 'Selecciona un silo'], ...disp.map(i => [i.s.id, `${i.s.codigo}${i.s.capacidad ? ' · ' + i.s.capacidad + ' ton' : ''} · ${i.cond}`])]), 1) : '<div class="ctx err">No hay silos disponibles en planta. Desinstala uno o agrega un silo nuevo.</div>'}
+      <fieldset><legend>Silos y montaje</legend>
+        ${disp.length ? `<div style="display:grid;gap:8px"><span class="sub" style="font-weight:600">Asigna cada silo disponible en planta al producto que llevará <i style="font-style:normal;color:var(--brand)">*</i></span>
+          <div class="sub">${prodsI.map(p => `<b class="mono">${esc(p.codigo)}</b>: ${p.cantidadSilos} silo(s)`).join(' · ')}</div>
+          <div class="card tbl-wrap" style="background:var(--bg)"><table><tbody>${disp.map(i => `<tr><td><b class="mono">${esc(i.s.codigo)}</b>${i.s.capacidad ? ` <span class="sub">${esc(i.s.capacidad)} ton</span>` : ''}${i.cond!=='Operativo' ? ` ${condChip(i.cond)}` : ''}</td><td style="width:60%"><select data-fi-silo="${esc(i.s.id)}" aria-label="Producto para ${esc(i.s.codigo)}"><option value="">No instalar</option>${prodsI.map(p => `<option value="${esc(p.codigo)}">${esc(p.codigo)} · ${esc(p.descripcion||'')}</option>`).join('')}</select></td></tr>`).join('')}</tbody></table></div></div>`
+          : '<div class="ctx err">No hay silos disponibles en planta. Desinstala uno o agrega un silo nuevo.</div>'}
         <div class="fg">${fld('Fecha de instalación', inp('fi-fecha', today(), 'type="date"'), 1)}${fld('Técnico / cuadrilla', inp('fi-tec', S.me?.nombre || '', 'list="dl-tecnicos" autocomplete="off"'), 1)}</div>
-        ${fld('Material granel cargado', inp('fi-mat', s.productos, 'list="dl-material" autocomplete="off"'))}
-        <div style="display:grid;gap:6px"><span class="sub" style="font-weight:600">Estado del silo al entregar</span>${rating('fi-estado')}</div>
+        <div style="display:grid;gap:6px"><span class="sub" style="font-weight:600">Estado de los silos al entregar</span>${rating('fi-estado')}</div>
       </fieldset>
       <fieldset><legend>Ubicación exacta</legend>${pickerHTML()}</fieldset>
-      <fieldset><legend>Evidencia</legend>${photoField('fi-fotos', 'Fotos del silo instalado')}${fld('Observaciones', ta('fi-obs'))}</fieldset>
+      <fieldset><legend>Evidencia</legend>${photoField('fi-fotos', 'Fotos de los silos instalados')}${fld('Observaciones', ta('fi-obs'))}</fieldset>
       <div class="ctx err" id="fi-err" hidden></div>
       <div class="actions"><button type="button" class="btn" id="fi-cancel">Cancelar</button><button class="btn primary" id="fi-save" ${disp.length ? '' : 'disabled'}>Confirmar instalación</button></div>
     </form>`, { eyebrow:'Paso 3 · ' + esc(s.codigo||'') });
   const ll = solLL(s) || [];
   const pk = picker(sh, s.lat || ll[0], s.lng || ll[1]);
   wirePhotos('fi-fotos', sh);
+  sh.querySelectorAll('[data-fi-silo]').forEach(c => c.addEventListener('change', () => {
+    if(!c.value) return; const p = prodsI.find(x => x.codigo===c.value);
+    const n = [...sh.querySelectorAll('[data-fi-silo]')].filter(x => x.value===c.value).length;
+    if(n > p.cantidadSilos){ c.value = ''; toast(`${p.codigo} lleva ${p.cantidadSilos} silo(s) en esta solicitud`); }
+  }));
   $('#fi-cancel', sh).onclick = () => openSol(s.id);
   $('#fi', sh).addEventListener('submit', ev => { ev.preventDefault(); const btn = $('#fi-save', sh);
     submitting(btn, $('#fi-err', sh), async () => {
-      const siloId = val('fi-silo', sh); need(siloId, 'Selecciona el silo.');
+      const asg = [...sh.querySelectorAll('[data-fi-silo]')].filter(c => c.value).map(c => [c.dataset.fiSilo, c.value]);
+      const ids = asg.map(x => x[0]);
+      need(ids.length >= 1, 'Asigna al menos un silo a un producto.'); need(ids.length <= cant, `Esta solicitud es por ${cant} silo(s).`);
+      for(const p of prodsI) need(asg.filter(x => x[1]===p.codigo).length <= p.cantidadSilos, `${p.codigo} lleva ${p.cantidadSilos} silo(s).`);
+      const siloProducto = Object.fromEntries(asg);
       need(val('fi-tec', sh), 'Indica el técnico o cuadrilla.');
-      recompute(); need(S.info.get(siloId)?.ubic==='En planta', 'Ese silo ya figura instalado en otra obra.');
+      recompute(); need(ids.every(id => S.info.get(id)?.ubic==='En planta'), 'Uno de los silos ya figura instalado en otra obra.');
       const fotos = await uploadPhotos('fi-fotos', sh, btn);
       const [lat, lng] = pk.get(); const fecha = val('fi-fecha', sh);
-      await S.db.collection('eventos').add({ siloId, solicitudId:s.id, tipo:'Instalación', fecha, tecnico:val('fi-tec',sh), material:val('fi-mat',sh), estado:radio('fi-estado',sh), obs:val('fi-obs',sh), fotos, obra:s.obra, cliente:s.cliente, comuna:s.comuna, ...stamp() });
-      const upd = { estado:'Instalada', siloId, fechaInstalacion:fecha }; if(lat && lng){ upd.lat = lat; upd.lng = lng; }
+      for(const siloId of ids) await S.db.collection('eventos').add({ siloId, solicitudId:s.id, tipo:'Instalación', fecha, tecnico:val('fi-tec',sh), producto:siloProducto[siloId], material:(prodsI.find(p => p.codigo===siloProducto[siloId])?.descripcion) || val('fi-mat',sh), estado:radio('fi-estado',sh), obs:val('fi-obs',sh), fotos, obra:s.obra, cliente:s.cliente, rut:s.rut||'', comuna:s.comuna, ...stamp() });
+      const upd = { estado:'Instalada', siloId:ids[0], siloIds:ids, siloProducto, fechaInstalacion:fecha }; if(lat && lng){ upd.lat = lat; upd.lng = lng; }
       await S.db.doc('solicitudes/' + s.id).update(upd);
-      toast(`${siloCode(siloId)} instalado en ${s.obra}`); openSol(s.id);
+      toast(`${ids.map(siloCode).join(', ')} instalado${ids.length > 1 ? 's' : ''} en ${s.obra}`); openSol(s.id);
     });
   });
 }
 
 /* ================= DESINSTALACIÓN ================= */
 function formRetiro(s){
-  const sh = openSheet('Desinstalar silo', `
-    <div class="ctx" style="margin-bottom:14px"><b class="mono">${esc(siloCode(s.siloId))}</b> · ${esc(s.obra)} · instalado ${fmtD(s.fechaInstalacion)} (${daysBetween(s.fechaInstalacion, today())} días)</div>
+  const ids = solSilos(s);
+  const sh = openSheet(ids.length > 1 ? `Desinstalar ${ids.length} silos` : 'Desinstalar silo', `
+    <div class="ctx" style="margin-bottom:14px"><b class="mono">${ids.map(id => esc(siloCode(id))).join(', ')}</b> · ${esc(s.obra)} · instalado${ids.length > 1 ? 's' : ''} ${fmtD(s.fechaInstalacion)} (${daysBetween(s.fechaInstalacion, today())} días)</div>
     <form class="form" id="fr" novalidate>
       <fieldset><legend>Retiro</legend>
         <div class="fg">${fld('Fecha de retiro', inp('fr-fecha', today(), 'type="date"'), 1)}${fld('Técnico / cuadrilla', inp('fr-tec', S.me?.nombre || '', 'list="dl-tecnicos" autocomplete="off"'), 1)}</div>
         <div class="fg">${fld('Motivo', sel('fr-motivo', ['Término de obra','Bajo consumo','Cambio por otro silo','Falla del silo','Solicitud del cliente','Otro']))}${fld('Estado al retirar', sel('fr-estret', ['Bueno, sin daños','Con daños menores','Con daños importantes','Con material endurecido / sucio']))}</div>
         <div style="display:grid;gap:6px"><span class="sub" style="font-weight:600">Estado general</span>${rating('fr-estado')}</div>
-        <p class="sub" style="margin:0">Si vuelve con daños, registra además una <b>Falla</b> para dejar la causa y si es imputable al cliente.</p>
+        <p class="sub" style="margin:0">Se retiran todos los silos de esta obra. Si alguno vuelve con daños, registra además una <b>Falla</b> para dejar la causa y si es imputable al cliente.</p>
       </fieldset>
       <fieldset><legend>Evidencia</legend>${photoField('fr-fotos', 'Fotos al retirar')}${fld('Observaciones', ta('fr-obs'))}</fieldset>
       <div class="ctx err" id="fr-err" hidden></div>
@@ -1174,9 +1243,9 @@ function formRetiro(s){
       need(val('fr-tec', sh), 'Indica el técnico o cuadrilla.');
       const fecha = val('fr-fecha', sh); need(fecha >= (s.fechaInstalacion||''), 'La fecha de retiro no puede ser anterior a la instalación.');
       const fotos = await uploadPhotos('fr-fotos', sh, btn);
-      await S.db.collection('eventos').add({ siloId:s.siloId, solicitudId:s.id, tipo:'Desinstalación', fecha, tecnico:val('fr-tec',sh), motivo:val('fr-motivo',sh), estadoRetiro:val('fr-estret',sh), estado:radio('fr-estado',sh), obs:val('fr-obs',sh), fotos, obra:s.obra, cliente:s.cliente, comuna:s.comuna, ...stamp() });
+      for(const siloId of ids) await S.db.collection('eventos').add({ siloId, solicitudId:s.id, tipo:'Desinstalación', fecha, tecnico:val('fr-tec',sh), motivo:val('fr-motivo',sh), estadoRetiro:val('fr-estret',sh), estado:radio('fr-estado',sh), obs:val('fr-obs',sh), fotos, obra:s.obra, cliente:s.cliente, rut:s.rut||'', comuna:s.comuna, ...stamp() });
       await S.db.doc('solicitudes/' + s.id).update({ estado:'Finalizada', fechaRetiro:fecha, motivoRetiro:val('fr-motivo',sh) });
-      toast(`${siloCode(s.siloId)} vuelve a planta`); openSol(s.id);
+      toast(`${ids.map(siloCode).join(', ')} vuelve${ids.length > 1 ? 'n' : ''} a planta`); openSol(s.id);
     });
   });
 }
@@ -1201,7 +1270,7 @@ function formSilo(s){
       const codigo = val('si-codigo', sh).toUpperCase(); need(codigo, 'El código es obligatorio.');
       need(!S.silos.some(x => x.codigo===codigo && x.id!==e.id), 'Ya existe un silo con el código ' + codigo + '.');
       const activo = val('si-activo', sh)==='1';
-      if(s && !activo) need(!S.sols.some(x => x.estado==='Instalada' && x.siloId===s.id), 'Desinstala el silo antes de darlo de baja.');
+      if(s && !activo) need(!S.sols.some(x => x.estado==='Instalada' && solHas(x, s.id)), 'Desinstala el silo antes de darlo de baja.');
       const d = { codigo, capacidad: val('si-cap',sh) ? numRaw(val('si-cap',sh)) : null, modelo:val('si-modelo',sh), serie:val('si-serie',sh), anio: val('si-anio',sh) ? numRaw(val('si-anio',sh)) : null, planta:val('si-planta',sh), activo, notas:val('si-notas',sh) };
       if(s){ await S.db.doc('silos/' + s.id).update(d); toast('Silo actualizado'); openSilo(s.id); }
       else { await S.db.collection('silos').add({ ...d, ...stamp() }); toast(`Silo ${codigo} agregado`); formSilo(); }
@@ -1453,8 +1522,8 @@ function exportCSV(){
   $('#x-ev', sh).onclick = () => saveCSV(`silos_registros_${d}.csv`, [['fecha','silo','tipo','obra','cliente','comuna','tecnico','componente','gravedad','causa','responsabilidad','tipo_mantencion','n_ot','trabajo','repuestos_clp','mano_obra_clp','servicio_externo_clp','otros_clp','total_clp','cobro_cliente','operativo','estado_silo','resultado','motivo_retiro','observaciones','n_fotos'],
     ...S.evs.slice().sort((a,b) => (a.fecha||'').localeCompare(b.fecha||'')).map(e => [e.fecha, siloCode(e.siloId), e.tipo, e.obra, e.cliente, e.comuna, e.tecnico, e.componente, e.gravedad, e.causa, e.imputable, e.tipoMant, e.nOT, e.trabajo, e.totRep, e.mo, e.ext, e.otros, e.total, e.cargo, e.operativo, e.estado, e.resultado, e.motivo, e.obs, (e.fotos||[]).length])]);
   $('#x-rep', sh).onclick = () => { const rows = []; S.evs.filter(e => e.repuestos?.length).forEach(e => e.repuestos.forEach(r => rows.push([e.fecha, siloCode(e.siloId), e.tipo, e.nOT, e.cliente, e.obra, r.d, r.c, r.u, r.p, numRaw(r.c)*numRaw(r.p)]))); saveCSV(`silos_repuestos_${d}.csv`, [['fecha','silo','tipo','n_ot','cliente','obra','repuesto','cantidad','unidad','costo_unitario','costo_total'], ...rows]); };
-  $('#x-sol', sh).onclick = () => saveCSV(`silos_solicitudes_${d}.csv`, [['codigo','estado','vendedor','cliente','obra','direccion','comuna','lat','lng','consumo_ton_mes','duracion_meses','creada','prefact_fecha','prefact_resultado','evaluador','silo','fecha_instalacion','fecha_retiro','dias_obra','motivo_retiro'],
-    ...S.sols.map(s => [s.codigo, s.estado, s.vendedor, s.cliente, s.obra, s.direccion, s.comuna, s.lat, s.lng, s.consumo, s.duracion, (s.creadoEn||'').slice(0,10), s.prefact?.fecha, s.prefact?.resultado, s.prefact?.evaluador, s.siloId ? siloCode(s.siloId) : '', s.fechaInstalacion, s.fechaRetiro, s.fechaInstalacion ? daysBetween(s.fechaInstalacion, s.fechaRetiro || today()) : '', s.motivoRetiro])]);
+  $('#x-sol', sh).onclick = () => saveCSV(`silos_solicitudes_${d}.csv`, [['codigo','estado','vendedor','rut_cliente','cliente','productos','cantidad_silos','obra','direccion','comuna','lat','lng','consumo_ton_mes','duracion_meses','creada','prefact_fecha','prefact_resultado','evaluador','silo','fecha_instalacion','fecha_retiro','dias_obra','motivo_retiro'],
+    ...S.sols.map(s => [s.codigo, s.estado, s.vendedor, s.rut, s.cliente, prodTxt(s), s.cantidadSilos, s.obra, s.direccion, s.comuna, s.lat, s.lng, s.consumo, s.duracion, (s.creadoEn||'').slice(0,10), s.prefact?.fecha, s.prefact?.resultado, s.prefact?.evaluador, solSilos(s).map(siloCode).join(' / '), s.fechaInstalacion, s.fechaRetiro, s.fechaInstalacion ? daysBetween(s.fechaInstalacion, s.fechaRetiro || today()) : '', s.motivoRetiro])]);
   $('#x-sil', sh).onclick = () => { recompute(); saveCSV(`silos_flota_${d}.csv`, [['silo','capacidad_ton','modelo','serie','ubicacion','condicion','obra_actual','cliente_actual','dias_lugar_actual','dias_acumulados_obra','instalaciones','fallas','fallas_imputables','visitas_reparacion','visitas_mantencion','gasto_repuestos','gasto_mo_ot','gasto_total'],
     ...infos().map(i => [i.s.codigo, i.s.capacidad, i.s.modelo, i.s.serie, i.ubic, i.cond, i.sol?.obra, i.sol?.cliente, i.dias, i.diasAcum, i.instalaciones, i.cnt.fallas, i.cnt.imput, i.cnt.rep, i.cnt.mant + i.cnt.insp, Math.round(i.g.rep), Math.round(i.g.mo), Math.round(i.g.total)])]); };
 }
@@ -1474,7 +1543,7 @@ const sb = window.supabase.createClient(SB_URL, SB_KEY, { auth:{ persistSession:
 
 const TBL = {
   silos:       d => ({ codigo:d.codigo }),
-  solicitudes: d => ({ estado:d.estado || 'Solicitada', silo_id:d.siloId || null }),
+  solicitudes: d => ({ estado:d.estado || 'Solicitada', silo_id:(Array.isArray(d.siloIds) && d.siloIds[0]) || d.siloId || null }),
   eventos:     d => ({ silo_id:d.siloId, solicitud_id:d.solicitudId || null, tipo:d.tipo, fecha:d.fecha }),
 };
 const cache = { silos:new Map(), solicitudes:new Map(), eventos:new Map() };
@@ -1540,6 +1609,24 @@ const sbAssets = { async upload(blob){
   return { id:path, url: sb.storage.from('fotos').getPublicUrl(path).data.publicUrl };
 } };
 const sbDownloads = { async save({ filename, data }){ const u = URL.createObjectURL(data); const a = document.createElement('a'); a.href = u; a.download = filename; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(u), 4000); } };
+
+/* ================= maestros: vendedores, productos, clientes ================= */
+async function loadMasters(){
+  const [v, p] = await Promise.all([ sb.from('sil_vendedores').select('*').order('nombre'), sb.from('sil_productos').select('*').order('codigo') ]);
+  S.vendedores = v.data || []; S.productos = p.data || [];
+  let all = [];
+  for(let from = 0; ; from += 1000){
+    const { data, error } = await sb.from('sil_clientes').select('rut,razon_social,ultima_compra,anios').order('razon_social').range(from, from + 999);
+    if(error || !data) break; all = all.concat(data); if(data.length < 1000) break;
+  }
+  S.clientes = all; S.cliByRut = new Map(all.map(c => [c.rut, c]));
+  S._cliLists = false;
+}
+function loadClientLists(){
+  if(S._cliLists || !S.clientes) return; S._cliLists = true;
+  $('#dl-ruts').innerHTML = S.clientes.map(c => `<option value="${esc(c.rut)}">${esc(c.razon_social)}</option>`).join('');
+  $('#dl-clientes').innerHTML = S.clientes.map(c => `<option value="${esc(c.razon_social)}">${esc(c.rut)}</option>`).join('');
+}
 
 /* ================= roles ================= */
 const ROLES = { admin:'Administrador', supervisor:'Supervisor (evalúa y gestiona flota)', tecnico:'Técnico (instala, mantiene, repara, retira)', vendedor:'Vendedor (solicita silos)', pendiente:'Pendiente de aprobación' };
@@ -1657,6 +1744,7 @@ async function onSession(session){
   sbDB.collection('solicitudes').onSnapshot(s => { S.sols = s.docs.map(d => ({ id:d.id, ...d.data() })); S.ready.o = true; scheduleRender(); }, onErr);
   sbDB.collection('eventos').onSnapshot(s => { S.evs = s.docs.map(d => ({ id:d.id, ...d.data() })); S.ready.e = true; scheduleRender(); }, onErr);
   listenRealtime();
+  loadMasters().catch(() => {});
   if(can('admin')){ const { data } = await sb.from('profiles').select('*'); S.users = data || []; updateBadges(); }
 }
 $('#user-chip').addEventListener('click', userSheet);
