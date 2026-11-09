@@ -1183,6 +1183,7 @@ function formSolicitud(s){
       else {
         const max = S.sols.reduce((a,x) => Math.max(a, parseInt(String(x.codigo||'').replace(/\D/g,''),10) || 0), 0);
         await S.db.collection('solicitudes').add({ ...d, codigo:'SOL-' + String(max+1).padStart(4,'0'), estado:'Solicitada', ...stamp() });
+        if(d.clienteNuevo) sb.rpc('cli_registrar', { p_rut:rut, p_razon:d.cliente, p_comuna:d.comuna, p_direccion:d.direccion, p_vendedor:d.vendedor }).then(() => loadMasters()).catch(() => {});
         toast('Solicitud enviada a evaluación'); closeSheet(); if(S.view!=='solicitudes') go('solicitudes');
       }
     });
