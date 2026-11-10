@@ -2,6 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="utf-8">
+<script>(function(){function a(){try{var t=localStorage.getItem("tx-theme"),d=document.documentElement;if(t==="dark"||t==="light")d.dataset.theme=t;else delete d.dataset.theme}catch(e){}}a();addEventListener("storage",function(e){if(e.key==="tx-theme")a()})})();</script>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#111214">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -59,6 +60,7 @@ button,input,select,textarea{font:inherit;color:inherit}
 .app .wrap{padding-left:20px}
 .ttl{display:flex;flex-direction:column;margin-right:auto;min-width:0}
 .ttl small{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--brand);font-weight:700}
+.ttl small::before{content:"";display:inline-block;width:7px;height:7px;border-radius:2px;background:#ff2a4d;margin-right:7px;vertical-align:1px;box-shadow:0 0 10px #ff2a4d}
 .ttl h1{margin:0;font-size:21px;font-weight:800;letter-spacing:-.01em;text-wrap:balance}
 .topmark{display:none;width:44px;color:var(--ink)}
 .bottom{display:none}
