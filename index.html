@@ -423,8 +423,8 @@ const I = {
   download: ic('<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>'),
   users: ic('<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.5 3.4-5.5 6.5-5.5s5.7 2 6.5 5.5"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14.8c2 .7 3.2 2.5 3.6 5.2"/>'),
 };
-const COND_COLOR = { 'Operativo':'var(--ok)', 'Con falla':'var(--warn)', 'Detenido':'var(--bad)', 'En reparación':'var(--info)', 'De baja':'var(--muted)' };
-const COND_CHIP = { 'Operativo':'ok', 'Con falla':'warn', 'Detenido':'bad', 'En reparación':'info', 'De baja':'' };
+const COND_COLOR = { 'Operativo':'var(--ok)', 'Detenido':'var(--bad)', 'En reparación':'var(--info)', 'De baja':'var(--muted)' };
+const COND_CHIP = { 'Operativo':'ok', 'Detenido':'bad', 'En reparación':'info', 'De baja':'' };
 const condChip = c => `<span class="chip ${COND_CHIP[c]||''}">${esc(c)}</span>`;
 const ubicChip = u => `<span class="chip ${u==='En obra'?'brand':u==='En planta'?'plain':''}">${esc(u)}</span>`;
 const EV_COLOR = { 'Instalación':'var(--brand)', 'Desinstalación':'var(--muted)', 'Falla':'var(--bad)', 'Reparación':'var(--info)', 'Mantención':'var(--ok)', 'Inspección':'var(--warn)' };
@@ -459,18 +459,18 @@ function recompute(){
   for(const s of S.silos){
     const evs = evBy.get(s.id) || [];
     const sol = S.sols.find(x => x.estado==='Instalada' && solHas(x, s.id)) || null;
-    const open = new Map(); let cond = 'Operativo';
+    const open = new Map(); let cond = s.condicion==='Detenido' ? 'Detenido' : 'Operativo';
     const cnt = { fallas:0, rep:0, mant:0, insp:0, visitas:0, imput:0 };
     const g = { rep:0, mo:0, total:0 };
     let lastVisit = null, lastMant = null, lastPhotos = null;
     for(const e of evs){
       if(VISIT_TYPES.includes(e.tipo)){ cnt.visitas++; lastVisit = e; if((e.fotos||[]).length) lastPhotos = e; }
       if(e.tipo==='Falla'){ cnt.fallas++; if((e.imputable==='Sí, cliente' || e.imputable==='Cliente')) cnt.imput++; open.set(e.id, e);
-        cond = (e.gravedad||'').startsWith('Grave') ? 'Detenido' : (cond==='Detenido' ? 'Detenido' : 'Con falla'); }
+        cond = (e.gravedad||'').startsWith('Grave') ? 'Detenido' : (cond==='Detenido' ? 'Detenido' : 'En reparación'); }
       if(e.tipo==='Reparación' || e.tipo==='Mantención'){
         if(e.tipo==='Reparación'){ cnt.rep++; if(e.fallaId) open.delete(e.fallaId); } else { cnt.mant++; lastMant = e; }
         g.rep += numRaw(e.totRep); g.mo += numRaw(e.mo) + numRaw(e.ext) + numRaw(e.otros); g.total += numRaw(e.total);
-        if(e.operativo==='Sí'){ const rest = [...open.values()]; cond = !rest.length ? 'Operativo' : rest.some(f => (f.gravedad||'').startsWith('Grave')) ? 'Detenido' : 'Con falla'; }
+        if(e.operativo==='Sí'){ const rest = [...open.values()]; cond = !rest.length ? 'Operativo' : rest.some(f => (f.gravedad||'').startsWith('Grave')) ? 'Detenido' : 'En reparación'; }
         else if(e.operativo==='No') cond = 'En reparación';
       }
       if(e.tipo==='Falla' || e.tipo==='Mantención'){  // visitas nuevas: el estado general manda
@@ -563,7 +563,7 @@ function drawMarkers(m, filter='todos'){
       if(filter==='falla' && i.cond==='Operativo') continue;
       const ll = solLL(i.sol); if(!ll) continue;
       pts.push(ll);
-      L.marker(ll, { icon:pinIcon(i.cond, i.cond==='Detenido' || i.cond==='Con falla'), title:i.s.codigo, riseOnHover:true })
+      L.marker(ll, { icon:pinIcon(i.cond, i.cond==='Detenido'), title:i.s.codigo, riseOnHover:true })
         .bindPopup(`<div style="display:grid;gap:4px;min-width:190px"><b class="mono" style="font-size:15px">${esc(i.s.codigo)}</b>
           <span>${esc(i.sol.obra)} · ${esc(i.sol.cliente)}</span><span class="sub">${esc(i.sol.comuna||'')} · ${i.dias} días en obra</span>
           <span>${condChip(i.cond)}</span><button class="btn sm primary" data-open-silo="${esc(i.s.id)}" style="margin-top:6px">Ver ficha</button></div>`)
@@ -713,7 +713,7 @@ function renderInicio(){
     el.innerHTML = `<div class="hero"><div><span class="eyebrow" style="color:var(--brand)">Bienvenido</span><h2 style="margin:6px 0 8px;font-size:28px;font-weight:800;letter-spacing:-.02em">Control 360 de la flota de silos</h2>
       <p style="opacity:.8;max-width:52ch;margin:0">Desde la solicitud del vendedor hasta el retiro: prefactibilidad, instalación, fallas, reparaciones, mantenciones, costos y fotos de cada visita.</p>
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:18px">${can('silo') ? `<button class="btn primary" data-act="new-silo">${I.plus}Agregar el primer silo</button>` : ''}<button class="btn" data-act="new-sol" style="background:transparent;color:inherit;border-color:color-mix(in srgb,var(--bg) 30%,transparent)">Crear una solicitud</button></div></div>
-      <div class="fleet" style="align-items:center;justify-content:center;flex-direction:row;gap:14px">${['Operativo','Operativo','Con falla','Operativo','En reparación'].map(c => `<span class="fs" style="cursor:default">${siloSVG(c,'')}</span>`).join('')}</div></div>
+      <div class="fleet" style="align-items:center;justify-content:center;flex-direction:row;gap:14px">${['Operativo','Operativo','Detenido','Operativo','En reparación'].map(c => `<span class="fs" style="cursor:default">${siloSVG(c,'')}</span>`).join('')}</div></div>
       <div class="card"><div class="empty"><b>Así funciona</b>1. Carga tus silos en <b>Silos</b>. 2. El vendedor crea una <b>Solicitud</b>. 3. Se evalúa la prefactibilidad y se instala. 4. Los técnicos registran fallas, reparaciones y mantenciones con fotos en <b>Registrar</b>.</div></div>`;
     return;
   }
@@ -728,9 +728,9 @@ function renderInicio(){
         <div style="opacity:.75"><b>${act.length}</b><span>Total flota</span></div>
       </div>
       <div class="ratio" role="img" aria-label="Condición de la flota">
-        ${['Operativo','Con falla','En reparación','Detenido'].map(c => `<i style="width:${byCond(c)/tot*100}%;background:${COND_COLOR[c]}"></i>`).join('')}
+        ${['Operativo','En reparación','Detenido'].map(c => `<i style="width:${byCond(c)/tot*100}%;background:${COND_COLOR[c]}"></i>`).join('')}
       </div>
-      <div class="legend">${['Operativo','Con falla','En reparación','Detenido'].map(c => `<span style="--c:${COND_COLOR[c]}">${c} ${byCond(c)}</span>`).join('')}</div>
+      <div class="legend">${['Operativo','En reparación','Detenido'].map(c => `<span style="--c:${COND_COLOR[c]}">${c} ${byCond(c)}</span>`).join('')}</div>
     </div>
     <div class="fleet">
       <div class="fleet-row"><span class="lbl">En obra</span>${obra.map(fleetBtn).join('') || '<span class="sub" style="color:inherit;opacity:.6">Ninguno</span>'}</div>
@@ -789,8 +789,8 @@ function renderMapa(){
   if(!el.dataset.built){
     el.dataset.built = '1';
     el.innerHTML = `<div class="mapbar"><div class="seg-f" role="group" aria-label="Filtro del mapa" id="mapa-f">
-      <button data-f="todos">Todo</button><button data-f="obra">Silos en obra</button><button data-f="falla">Con falla</button><button data-f="solicitudes">Solicitudes</button></div>
-      <span class="swatch" style="--c:var(--ok)">Operativo</span><span class="swatch" style="--c:var(--warn)">Con falla</span><span class="swatch" style="--c:var(--info)">En reparación</span><span class="swatch" style="--c:var(--bad)">Detenido</span><span class="swatch" style="--c:var(--info);">○ Solicitud</span></div>
+      <button data-f="todos">Todo</button><button data-f="obra">Silos en obra</button><button data-f="falla">No operativos</button><button data-f="solicitudes">Solicitudes</button></div>
+      <span class="swatch" style="--c:var(--ok)">Operativo</span><span class="swatch" style="--c:var(--info)">En reparación</span><span class="swatch" style="--c:var(--bad)">Detenido</span><span class="swatch" style="--c:var(--info);">○ Solicitud</span></div>
       <div class="map full" id="big-map"></div><p class="sub" id="mapa-note" style="margin-top:10px"></p>`;
     $$('#mapa-f button').forEach(b => b.onclick = () => { S.f.mapa = b.dataset.f; renderMapa(); fitTo(S.maps.big, S.lastPts||[]); });
     S.maps.big = makeMap($('#big-map'));
@@ -859,7 +859,7 @@ function renderSilos(){
   const el = $('#v-silos');
   if(!el.dataset.built){
     el.dataset.built = '1';
-    el.innerHTML = `<div class="mapbar"><div class="seg-f" role="group" aria-label="Filtro" id="silos-f"><button data-f="todos">Todos</button><button data-f="obra">En obra</button><button data-f="planta">En planta</button><button data-f="falla">Con falla</button><button data-f="baja">De baja</button></div>
+    el.innerHTML = `<div class="mapbar"><div class="seg-f" role="group" aria-label="Filtro" id="silos-f"><button data-f="todos">Todos</button><button data-f="obra">En obra</button><button data-f="planta">En planta</button><button data-f="falla">No operativos</button><button data-f="baja">De baja</button></div>
       <input id="silos-q" type="search" placeholder="Buscar código, obra o cliente" style="max-width:320px" aria-label="Buscar silos"></div><div id="silos-grid"></div>`;
     $$('#silos-f button').forEach(b => b.onclick = () => { S.f.silos = b.dataset.f; renderSilos(); });
     $('#silos-q').addEventListener('input', e => { S.f.silosQ = e.target.value; renderSilos(); });
@@ -1238,7 +1238,7 @@ function formInstalar(s){
   recompute();
   const prodsI = Array.isArray(s.productos) && s.productos.length ? s.productos.map(p => ({ ...p, cantidadSilos: Math.max(1, parseInt(p.cantidadSilos,10) || (s.productos.length===1 ? parseInt(s.cantidadSilos,10) || 1 : 1)) })) : [{ codigo:'GRANEL', descripcion: prodTxt(s) || 'Material granel', cantidadSilos: Math.max(1, parseInt(s.cantidadSilos, 10) || 1) }];
   const cant = prodsI.reduce((a,p) => a + p.cantidadSilos, 0);
-  const disp = activeInfos().filter(i => i.ubic==='En planta').sort((a,b) => String(a.s.codigo).localeCompare(String(b.s.codigo),'es',{numeric:true}));
+  const disp = activeInfos().filter(i => i.ubic==='En planta' && i.cond!=='Detenido').sort((a,b) => String(a.s.codigo).localeCompare(String(b.s.codigo),'es',{numeric:true}));
   const sh = openSheet(cant > 1 ? `Instalar ${cant} silos` : 'Instalar silo', `
     <div class="ctx" style="margin-bottom:14px"><b>${esc(s.obra)}</b> · ${esc(s.cliente)} · ${esc(s.comuna||'')} · solicitados: <b>${cant}</b> silo(s)${prodCodes(s) ? ' · ' + esc(prodCodes(s)) : ''}</div>
     <form class="form" id="fi" novalidate>
@@ -1343,9 +1343,17 @@ function formSilo(s){
 }
 
 /* ================= REGISTRAR (visitas / OT) ================= */
-const COMPONENTES = ['Motor / motorreductor','Mezclador','Válvula / compuerta de descarga',
-  'Tablero eléctrico · Enchufe 5x32','Tablero eléctrico · Enchufe 5x16','Tablero eléctrico · Enchufe 4x16','Tablero eléctrico · Enchufe 3x16','Tablero eléctrico · Diferencial','Tablero eléctrico · Guarda motor 10 amp','Tablero eléctrico · Contactores','Tablero eléctrico · Reloj control','Tablero eléctrico · Parada de emergencia',
-  'Filtro','Bomba / dosificador de agua','Vibrador','Otro'];
+const COMPONENTES_G = [
+  ['Equipos', ['Motor / motorreductor','Mezclador','Válvula / compuerta de descarga','Bomba / dosificador de agua','Vibrador']],
+  ['Tablero eléctrico', ['Tablero eléctrico · Enchufe 5x32','Tablero eléctrico · Enchufe 5x16','Tablero eléctrico · Enchufe 4x16','Tablero eléctrico · Enchufe 3x16','Tablero eléctrico · Diferencial','Tablero eléctrico · Guarda motor 10 amp','Tablero eléctrico · Contactores','Tablero eléctrico · Reloj control','Tablero eléctrico · Parada de emergencia']],
+  ['Filtro', ['Filtro']],
+  ['Otro', ['Otro']]];
+const MANT_G = [
+  ['Programada', ['Preventiva programada','Lubricación y ajustes']],
+  ['Filtros y revisión', ['Cambio de filtros','Revisión eléctrica']],
+  ['Correctiva', ['Correctiva menor']]];
+// select con grupos (optgroup); blank=true agrega opción vacía
+const selG = (id, groups, blank=true) => `<select id="${id}">${blank ? '<option value=""></option>' : ''}${groups.map(([g, l]) => `<optgroup label="${esc(g)}">${l.map(o => `<option>${esc(o)}</option>`).join('')}</optgroup>`).join('')}</select>`;
 const CAUSAS = ['Por determinar','Desgaste normal','Mal uso del cliente','Golpe / accidente en obra','Falla eléctrica de la obra','Humedad','Falta de mantención','Defecto de fabricación','Otro'];
 function renderRegistrar(opts){
   const el = $('#v-registrar');
@@ -1362,12 +1370,12 @@ function renderRegistrar(opts){
         </div>
       </fieldset>
       <fieldset data-show="Falla"><legend>Reparación</legend>
-        <div class="fg">${fld('Componente afectado', sel('r-comp', ['', ...COMPONENTES]), 1)}${fld('Gravedad', sel('r-grav', ['Leve – sigue operando','Moderada – opera con limitaciones','Grave – silo detenido']))}</div>
+        <div class="fg">${fld('Componente afectado', selG('r-comp', COMPONENTES_G), 1)}${fld('Gravedad', sel('r-grav', ['Leve – sigue operando','Moderada – opera con limitaciones','Grave – silo detenido']))}</div>
         <div class="fg">${fld('Causa probable', sel('r-causa', CAUSAS))}${fld('Responsable', sel('r-imp', ['Cliente','Grupo TX']))}</div>
         ${fld('Qué pasó', ta('r-desc', '', 'Síntomas, cuándo se detectó, quién avisó'), 1)}
       </fieldset>
       <fieldset data-show="Mantención"><legend>Mantención</legend>
-        ${fld('Tipo de mantención', sel('r-tmant', ['Preventiva programada','Lubricación y ajustes','Cambio de filtros','Revisión eléctrica','Correctiva menor']))}
+        ${fld('Tipo de mantención', selG('r-tmant', MANT_G, false))}
       </fieldset>
       <fieldset data-show="Falla Mantención"><legend>Orden de trabajo y costos</legend>
         <div class="fg">${fld('N° OT (opcional)', inp('r-ot', '', 'autocomplete="off"'))}${fld('Lugar', sel('r-lugar', ['En obra','En taller / planta']))}</div>
@@ -1786,7 +1794,7 @@ function userSheet(){
 }
 
 /* ================= arranque ================= */
-$('#auth-silos').innerHTML = ['Operativo','Operativo','Con falla'].map(c => siloSVG(c,'')).join('');
+$('#auth-silos').innerHTML = ['Operativo','Operativo','Detenido'].map(c => siloSVG(c,'')).join('');
 let started = false, recovering = false;
 async function onSession(session){
   if(recovering) return;
