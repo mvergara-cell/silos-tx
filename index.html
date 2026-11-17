@@ -397,6 +397,7 @@ const MESES = ['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov'
 const fmtDL = s => { if(!s) return '–'; const [y,m,d] = s.split('-'); return `${+d} ${MESES[+m-1]} ${y}`; };
 const norm = s => String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase().trim();
 const MANT_DIAS = 45;     // alerta: silo en obra sin mantención en este plazo
+const tl = t => t==='Falla' ? 'Reparación' : t;  // en la app, la antigua "Falla" se muestra como "Reparación"
 const VISIT_TYPES = ['Instalación','Desinstalación','Reparación','Mantención','Inspección'];
 
 /* ================= icons ================= */
@@ -464,13 +465,18 @@ function recompute(){
     let lastVisit = null, lastMant = null, lastPhotos = null;
     for(const e of evs){
       if(VISIT_TYPES.includes(e.tipo)){ cnt.visitas++; lastVisit = e; if((e.fotos||[]).length) lastPhotos = e; }
-      if(e.tipo==='Falla'){ cnt.fallas++; if(e.imputable==='Sí, cliente') cnt.imput++; open.set(e.id, e);
+      if(e.tipo==='Falla'){ cnt.fallas++; if((e.imputable==='Sí, cliente' || e.imputable==='Cliente')) cnt.imput++; open.set(e.id, e);
         cond = (e.gravedad||'').startsWith('Grave') ? 'Detenido' : (cond==='Detenido' ? 'Detenido' : 'Con falla'); }
       if(e.tipo==='Reparación' || e.tipo==='Mantención'){
         if(e.tipo==='Reparación'){ cnt.rep++; if(e.fallaId) open.delete(e.fallaId); } else { cnt.mant++; lastMant = e; }
         g.rep += numRaw(e.totRep); g.mo += numRaw(e.mo) + numRaw(e.ext) + numRaw(e.otros); g.total += numRaw(e.total);
         if(e.operativo==='Sí'){ const rest = [...open.values()]; cond = !rest.length ? 'Operativo' : rest.some(f => (f.gravedad||'').startsWith('Grave')) ? 'Detenido' : 'Con falla'; }
         else if(e.operativo==='No') cond = 'En reparación';
+      }
+      if(e.tipo==='Falla' || e.tipo==='Mantención'){  // visitas nuevas: el estado general manda
+        if(e.tipo==='Falla'){ g.rep += numRaw(e.totRep); g.mo += numRaw(e.mo) + numRaw(e.ext) + numRaw(e.otros); g.total += numRaw(e.total); }
+        if(e.estado==='Funcionando'){ open.clear(); cond = 'Operativo'; }
+        else if(e.estado==='En reparación') cond = 'En reparación';
       }
       if(e.tipo==='Inspección'){ cnt.insp++; lastMant = lastMant && lastMant.fecha > e.fecha ? lastMant : e; }
     }
@@ -903,8 +909,9 @@ function evText(e){
   if(e.tipo==='Instalación') p.push(`${esc(e.obra)} · ${esc(e.cliente)}`, e.material ? 'Material: ' + esc(e.material) : '');
   if(e.tipo==='Desinstalación') p.push(`Desde ${esc(e.obra)} · Motivo: ${esc(e.motivo||'–')}`, 'Estado al retiro: ' + esc(e.estadoRetiro||'–'));
   if(e.tipo==='Falla') p.push(`<b>${esc(e.componente)}</b> · ${esc(e.gravedad)}`, `Causa: ${esc(e.causa)} · Responsable: ${esc(e.imputable)}`, esc(e.descripcion));
-  if(e.tipo==='Reparación' || e.tipo==='Mantención'){
-    if(e.tipo==='Reparación'){ const f = e.fallaId && S.evs.find(x => x.id===e.fallaId); p.push(f ? `Resuelve: ${esc(f.componente)} (${fmtD(f.fecha)})` : 'Sin falla asociada'); }
+  if(e.tipo==='Reparación' || e.tipo==='Mantención' || (e.tipo==='Falla' && (e.trabajo || e.total))){
+    if(e.tipo==='Falla'){}
+    else if(e.tipo==='Reparación'){ const f = e.fallaId && S.evs.find(x => x.id===e.fallaId); p.push(f ? `Resuelve: ${esc(f.componente)} (${fmtD(f.fecha)})` : 'Sin falla asociada'); }
     else p.push(esc(e.tipoMant || 'Mantención'));
     p.push(esc(e.trabajo));
     if((e.repuestos||[]).length) p.push('Repuestos: ' + e.repuestos.map(r => `${esc(r.d)} ×${esc(r.c)} ${esc(r.u)}`).join(', '));
@@ -958,7 +965,7 @@ function openSilo(id){
           const gs = (S.evBy.get(s.id)||[]).filter(e => e.solicitudId===x.id).reduce((a,e) => a + numRaw(e.total), 0);
           return `<tr class="click" data-open-sol="${esc(x.id)}"><td>${esc(x.obra)}<div class="sub">${esc(x.cliente)}</div></td><td class="sub">${fmtD(x.fechaInstalacion)}</td><td>${x.fechaRetiro ? `<span class="sub">${fmtD(x.fechaRetiro)}</span>` : '<span class="chip brand">Actual</span>'}</td><td class="r num">${daysBetween(x.fechaInstalacion, x.fechaRetiro || today())}</td><td class="r num">${clpK(gs)}</td></tr>`; }).join('')}</tbody></table></div>` : '<p class="sub">Sin instalaciones registradas.</p>'}</div>
       <div class="block"><h3>Historial completo</h3>${evs.length ? `<ul class="tl">${evs.map(e => `<li style="--c:${EV_COLOR[e.tipo]}">
-          <div class="h"><span>${esc(e.tipo)}</span><span class="sub">${fmtD(e.fecha)} · ${esc(e.tecnico||'')}</span></div>${evText(e)}${photosHTML(e.fotos)}
+          <div class="h"><span>${esc(tl(e.tipo))}</span><span class="sub">${fmtD(e.fecha)} · ${esc(e.tecnico||'')}</span></div>${evText(e)}${photosHTML(e.fotos)}
           ${S.canEdit && e.tipo!=='Instalación' && e.tipo!=='Desinstalación' ? `<div style="margin-top:6px"><button class="btn sm danger" data-del-ev="${esc(e.id)}">Eliminar registro</button></div>` : ''}</li>`).join('')}</ul>` : '<p class="sub">Sin registros.</p>'}</div>`,
       { eyebrow:'Ficha del silo', refresh:() => { const st = $('#sheet').scrollTop; draw(); $('#sheet').scrollTop = st; } });
     $('#fx-reg', sh)?.addEventListener('click', () => { closeSheet(); go('registrar', { siloId:s.id }); });
@@ -1006,7 +1013,7 @@ function openSol(id){
         <div class="fg" style="gap:6px 16px">${[['Acceso camión granel',p.acceso],['Terreno / base',p.terreno],['Espacio',p.espacio],['Energía eléctrica',p.energia],['Agua',p.agua],['Distancia a punto de uso',p.distancia ? p.distancia + ' m' : '']].filter(x => x[1]).map(x => `<div><span class="sub">${x[0]}</span><div><b>${esc(x[1])}</b></div></div>`).join('')}</div>
         ${p.condiciones ? `<div>${esc(p.condiciones)}</div>` : ''}${photosHTML(p.fotos)}</div></div>` : ''}
       ${solSilos(s).length ? `<div class="block"><h3>${solSilos(s).length > 1 ? 'Silos asignados' : 'Silo asignado'}</h3><div style="display:grid;gap:10px">${solSilos(s).map(id => `<button class="sc" data-open-silo="${esc(id)}" style="grid-template-columns:62px minmax(0,1fr)">${siloSVG(S.info.get(id)?.cond||'Operativo','silo')}<div><span class="code">${esc(siloCode(id))}</span><div class="loc">Instalado ${fmtDL(s.fechaInstalacion)}${s.fechaRetiro ? ' · retirado ' + fmtDL(s.fechaRetiro) : ''}</div><div class="sub">${s.fechaInstalacion ? daysBetween(s.fechaInstalacion, s.fechaRetiro || today()) + ' días en obra' : ''}</div></div></button>`).join('')}</div></div>` : ''}
-      ${evs.length ? `<div class="block"><h3>Registros en esta obra</h3><ul class="tl">${evs.map(e => `<li style="--c:${EV_COLOR[e.tipo]}"><div class="h"><span>${esc(e.tipo)} · <span class="mono">${esc(siloCode(e.siloId))}</span></span><span class="sub">${fmtD(e.fecha)}</span></div>${evText(e)}${photosHTML(e.fotos)}</li>`).join('')}</ul></div>` : ''}
+      ${evs.length ? `<div class="block"><h3>Registros en esta obra</h3><ul class="tl">${evs.map(e => `<li style="--c:${EV_COLOR[e.tipo]}"><div class="h"><span>${esc(tl(e.tipo))} · <span class="mono">${esc(siloCode(e.siloId))}</span></span><span class="sub">${fmtD(e.fecha)}</span></div>${evText(e)}${photosHTML(e.fotos)}</li>`).join('')}</ul></div>` : ''}
       <div class="actions block" id="sol-actions"></div>`, { eyebrow:`Solicitud ${esc(s.codigo||'')}`, refresh:() => { const st = $('#sheet').scrollTop; draw(); $('#sheet').scrollTop = st; } });
     const a = $('#sol-actions', sh);
     const B = (t, cls, fn) => { const b = document.createElement('button'); b.className = 'btn ' + cls; b.innerHTML = t; b.onclick = fn; a.appendChild(b); return b; };
@@ -1200,7 +1207,7 @@ function formPrefact(s){
       <fieldset><legend>Evaluación en terreno</legend>
         <div class="fg">${fld('Fecha de evaluación', inp('fp-fecha', today(), 'type="date"'), 1)}${fld('Evaluado por', inp('fp-eval', S.me?.nombre || '', 'list="dl-tecnicos" autocomplete="off"'), 1)}</div>
         <div class="fg">${fld('Acceso camión granel', sel('fp-acceso', ['Sí, expedito','Con restricciones','No hay acceso']))}${fld('Terreno / base', sel('fp-terreno', ['Firme y nivelado','Requiere preparación','No apto']))}</div>
-        <div class="fg">${fld('Espacio para silo', sel('fp-espacio', ['Suficiente','Justo','Insuficiente']))}${fld('Energía eléctrica', sel('fp-energia', ['Trifásica disponible','Monofásica disponible','No disponible']))}</div>
+        <div class="fg">${fld('Espacio para silo', sel('fp-espacio', ['Suficiente','Justo','Insuficiente']))}${fld('Energía eléctrica', sel('fp-energia', ['Monofásica disponible','No disponible']))}</div>
         <div class="fg">${fld('Agua', sel('fp-agua', ['Disponible','No disponible']))}${fld('Distancia a punto de uso (m)', inp('fp-dist', '', 'type="number" min="0" inputmode="numeric"'))}</div>
         ${photoField('fp-fotos', 'Fotos del lugar')}
       </fieldset>
@@ -1286,7 +1293,7 @@ function formRetiro(s){
         <div class="fg">${fld('Fecha de retiro', inp('fr-fecha', today(), 'type="date"'), 1)}${fld('Técnico / cuadrilla', inp('fr-tec', S.me?.nombre || '', 'list="dl-tecnicos" autocomplete="off"'), 1)}</div>
         <div class="fg">${fld('Motivo', sel('fr-motivo', ['Término de obra','Bajo consumo','Cambio por otro silo','Falla del silo','Solicitud del cliente','Otro']))}${fld('Estado al retirar', sel('fr-estret', ['Bueno, sin daños','Con daños menores','Con daños importantes','Con material endurecido / sucio']))}</div>
         <div style="display:grid;gap:6px"><span class="sub" style="font-weight:600">Estado general</span>${rating('fr-estado')}</div>
-        <p class="sub" style="margin:0">Se retiran todos los silos de esta obra. Si alguno vuelve con daños, registra además una <b>Falla</b> para dejar la causa y si es imputable al cliente.</p>
+        <p class="sub" style="margin:0">Se retiran todos los silos de esta obra. Si alguno vuelve con daños, registra además una <b>Reparación</b> para dejar la causa y quién es el responsable.</p>
       </fieldset>
       <fieldset><legend>Evidencia</legend>${photoField('fr-fotos', 'Fotos al retirar')}${fld('Observaciones', ta('fr-obs'))}</fieldset>
       <div class="ctx err" id="fr-err" hidden></div>
@@ -1336,8 +1343,10 @@ function formSilo(s){
 }
 
 /* ================= REGISTRAR (visitas / OT) ================= */
-const COMPONENTES = ['Tornillo sinfín / helicoide','Motor / motorreductor','Mezclador','Válvula / compuerta de descarga','Filtro de mangas / venteo','Tablero eléctrico / cableado','Sensor de nivel','Manguera / acople de carga','Bomba / dosificador de agua','Vibrador','Estructura / patas / anclajes','Escalera / baranda / plataforma','Otro'];
-const CAUSAS = ['Por determinar','Desgaste normal','Mal uso del cliente','Golpe / accidente en obra','Falla eléctrica de la obra','Material contaminado / humedad','Falta de mantención','Defecto de fabricación','Otro'];
+const COMPONENTES = ['Motor / motorreductor','Mezclador','Válvula / compuerta de descarga',
+  'Tablero eléctrico · Enchufe 5x32','Tablero eléctrico · Enchufe 5x16','Tablero eléctrico · Enchufe 4x16','Tablero eléctrico · Enchufe 3x16','Tablero eléctrico · Diferencial','Tablero eléctrico · Guarda motor 10 amp','Tablero eléctrico · Contactores','Tablero eléctrico · Reloj control','Tablero eléctrico · Parada de emergencia',
+  'Filtro','Bomba / dosificador de agua','Vibrador','Otro'];
+const CAUSAS = ['Por determinar','Desgaste normal','Mal uso del cliente','Golpe / accidente en obra','Falla eléctrica de la obra','Humedad','Falta de mantención','Defecto de fabricación','Otro'];
 function renderRegistrar(opts){
   const el = $('#v-registrar');
   if(!el.dataset.built){
@@ -1349,31 +1358,27 @@ function renderRegistrar(opts){
         <div class="fg">${fld('Silo', '<select id="r-silo"></select>', 1)}${fld('Fecha', inp('r-fecha', today(), 'type="date"'), 1)}</div>
         <div class="ctx" id="r-ctx">Selecciona un silo para ver dónde está y su condición.</div>
         <div class="types" role="radiogroup" aria-label="Tipo de registro">
-          ${[['Falla',I.alert,'reportar problema'],['Reparación',I.wrench,'corrige una falla'],['Mantención',I.gear,'preventiva o limpieza'],['Inspección',I.eye,'revisión rápida']].map(([t,icn,d],k) => `<label><input type="radio" name="r-tipo" id="r-t-${k}" value="${t}"${k===0?' checked':''}><span>${icn}${t}<small>${d}</small></span></label>`).join('')}
+          ${[['Falla','Reparación',I.wrench,'reportar y reparar un problema'],['Mantención','Mantención',I.gear,'cambio de filtros y ajustes']].map(([t,lb,icn,d],k) => `<label><input type="radio" name="r-tipo" id="r-t-${k}" value="${t}"${k===0?' checked':''}><span>${icn}${lb}<small>${d}</small></span></label>`).join('')}
         </div>
       </fieldset>
-      <fieldset data-show="Falla"><legend>Falla</legend>
+      <fieldset data-show="Falla"><legend>Reparación</legend>
         <div class="fg">${fld('Componente afectado', sel('r-comp', ['', ...COMPONENTES]), 1)}${fld('Gravedad', sel('r-grav', ['Leve – sigue operando','Moderada – opera con limitaciones','Grave – silo detenido']))}</div>
-        <div class="fg">${fld('Causa probable', sel('r-causa', CAUSAS))}${fld('¿Responsabilidad del cliente?', sel('r-imp', ['En evaluación','Sí, cliente','No, Grupo TX']))}</div>
+        <div class="fg">${fld('Causa probable', sel('r-causa', CAUSAS))}${fld('Responsable', sel('r-imp', ['Cliente','Grupo TX']))}</div>
         ${fld('Qué pasó', ta('r-desc', '', 'Síntomas, cuándo se detectó, quién avisó'), 1)}
       </fieldset>
-      <fieldset data-show="Reparación"><legend>Reparación</legend>
-        <div class="fg">${fld('Falla que resuelve', '<select id="r-falla"><option value="">Sin falla asociada</option></select>')}${fld('¿Se cobra al cliente?', sel('r-cargo', ['No','Sí','Por definir']))}</div>
-      </fieldset>
       <fieldset data-show="Mantención"><legend>Mantención</legend>
-        ${fld('Tipo de mantención', sel('r-tmant', ['Preventiva programada','Limpieza de silo','Lubricación y ajustes','Cambio de filtros / mangas','Revisión eléctrica','Correctiva menor']))}
+        ${fld('Tipo de mantención', sel('r-tmant', ['Preventiva programada','Lubricación y ajustes','Cambio de filtros','Revisión eléctrica','Correctiva menor']))}
       </fieldset>
-      <fieldset data-show="Reparación Mantención"><legend>Orden de trabajo y costos</legend>
+      <fieldset data-show="Falla Mantención"><legend>Orden de trabajo y costos</legend>
         <div class="fg">${fld('N° OT (opcional)', inp('r-ot', '', 'autocomplete="off"'))}${fld('Lugar', sel('r-lugar', ['En obra','En taller / planta']))}</div>
         ${fld('Trabajo realizado', ta('r-trab', '', 'Qué se cambió, ajustó o limpió'), 1)}
         <div><span class="eyebrow">Repuestos e insumos</span><div id="r-reps" style="display:grid;gap:8px;margin-top:8px"></div><button type="button" class="btn sm" id="r-addrep" style="margin-top:8px">${I.plus}Agregar repuesto o insumo</button></div>
         <div class="fg3">${fld('Horas hombre', inp('r-hh', '', 'type="number" min="0" step="0.5" inputmode="decimal"'))}${fld('Mano de obra interna (CLP)', inp('r-mo', '', 'type="number" min="0" inputmode="numeric"'))}${fld('Servicio externo / OT proveedor (CLP)', inp('r-ext', '', 'type="number" min="0" inputmode="numeric"'))}</div>
-        <div class="fg">${fld('Otros (flete, viáticos)', inp('r-otros', '', 'type="number" min="0" inputmode="numeric"'))}${fld('¿Quedó operativo?', sel('r-oper', ['Sí','No, sigue en reparación']))}</div>
+        <div class="fg">${fld('Otros (flete, viáticos)', inp('r-otros', '', 'type="number" min="0" inputmode="numeric"'))}<span></span></div>
         <div class="totals"><div><small>Repuestos</small><b id="r-trep">$0</b></div><div><small>Mano de obra y OT</small><b id="r-tmo">$0</b></div><div><small>Total</small><b id="r-ttot">$0</b></div></div>
       </fieldset>
-      <fieldset data-show="Inspección"><legend>Inspección</legend>${fld('Resultado', sel('r-res', ['Sin observaciones','Con observaciones','Requiere reparación']))}</fieldset>
       <fieldset><legend>Estado y evidencia</legend>
-        <div style="display:grid;gap:6px"><span class="sub" style="font-weight:600">Estado general del silo en esta visita</span>${rating('r-estado')}</div>
+        <div style="display:grid;gap:6px"><span class="sub" style="font-weight:600">Estado general del silo en esta visita</span><div class="rating" role="radiogroup" aria-label="Estado general del silo">${['Funcionando','En reparación'].map((o,k) => `<label><input type="radio" name="r-estado" id="r-estado-${k}" value="${o}"${k===0?' checked':''}><span>${o}</span></label>`).join('')}</div></div>
         <div class="fg">${fld('Técnico / cuadrilla', inp('r-tec', S.me?.nombre || '', 'list="dl-tecnicos" autocomplete="off"'), 1)}<span></span></div>
         <div id="r-photos"></div>
         ${fld('Observaciones', ta('r-obs'))}
@@ -1382,14 +1387,13 @@ function renderRegistrar(opts){
       <div class="actions"><button type="button" class="btn" id="r-clear">Limpiar</button><button class="btn primary" id="r-save">Guardar registro</button></div>
     </form></div>`;
     const root = el;
-    $$('input[name="r-tipo"]', root).forEach(r => r.addEventListener('change', regSync));
+    $$('input[name="r-tipo"]', root).forEach(r => r.addEventListener('change', () => { regSync(); regEstadoDef(); }));
     $('#r-silo').addEventListener('change', regCtx);
-    $('#r-falla').addEventListener('change', () => { const f = S.evs.find(x => x.id===val('r-falla')); if(f) $('#r-cargo').value = f.imputable==='Sí, cliente' ? 'Sí' : f.imputable==='En evaluación' ? 'Por definir' : 'No'; });
     $('#r-addrep').onclick = () => addRep();
     ['r-mo','r-ext','r-otros'].forEach(id => $('#'+id).addEventListener('input', regTotals));
     $('#r-clear').onclick = () => regReset(false);
     $('#fr2').addEventListener('submit', regSubmit);
-    addRep(); regSync();
+    addRep(); regSync(); regEstadoDef();
   }
   const ph = S.assets ? '1' : '0';
   if(el.dataset.ph !== ph){ el.dataset.ph = ph; $('#r-photos').innerHTML = photoField('r-fotos', 'Fotos de la visita'); wirePhotos('r-fotos', el); }
@@ -1406,13 +1410,12 @@ function regSync(){
   regCtx();
 }
 function regCtx(){
-  const i = S.info.get(val('r-silo')); const ctx = $('#r-ctx'); const fs = $('#r-falla'); const keep = fs.value;
-  fs.innerHTML = '<option value="">Sin falla asociada</option>';
+  const i = S.info.get(val('r-silo')); const ctx = $('#r-ctx');
   if(!i){ ctx.textContent = 'Selecciona un silo para ver dónde está y su condición.'; return; }
-  ctx.innerHTML = `${ubicChip(i.ubic)} ${condChip(i.cond)} ${i.sol ? `<b>${esc(i.sol.obra)}</b> · ${esc(i.sol.cliente)} · ${i.dias} días` : ''}${i.fallasAbiertas.length ? ` · <b>${i.fallasAbiertas.length} falla(s) abierta(s)</b>` : ''}${i.lastVisit ? ` · última visita ${fmtD(i.lastVisit.fecha)}` : ''}`;
-  i.fallasAbiertas.forEach(f => fs.insertAdjacentHTML('beforeend', `<option value="${esc(f.id)}">${esc(fmtD(f.fecha) + ' · ' + f.componente)}</option>`));
-  if([...fs.options].some(o => o.value===keep)) fs.value = keep; else if(i.fallasAbiertas.length===1 && radio('r-tipo')==='Reparación'){ fs.value = i.fallasAbiertas[0].id; fs.dispatchEvent(new Event('change')); }
+  ctx.innerHTML = `${ubicChip(i.ubic)} ${condChip(i.cond)} ${i.sol ? `<b>${esc(i.sol.obra)}</b> · ${esc(i.sol.cliente)} · ${i.dias} días` : ''}${i.fallasAbiertas.length ? ` · <b>${i.fallasAbiertas.length} reparación(es) abierta(s)</b>` : ''}${i.lastVisit ? ` · última visita ${fmtD(i.lastVisit.fecha)}` : ''}`;
 }
+// el estado general se propone según el tipo de visita (se puede cambiar)
+function regEstadoDef(){ const o = $(`input[name="r-estado"][value="${radio('r-tipo')==='Falla' ? 'En reparación' : 'Funcionando'}"]`); if(o) o.checked = true; }
 function addRep(){
   const row = document.createElement('div'); row.className = 'rep'; const u = Math.random().toString(36).slice(2,8);
   row.innerHTML = `${fld('Repuesto / insumo', `<input id="rp-d-${u}" class="rp-d" list="dl-repuestos" autocomplete="off">`).replace('class="f"','class="f rd"')}
@@ -1435,7 +1438,7 @@ function regReset(keepSilo){
   if(keepSilo){ $('#r-silo').value = silo; const r = $(`input[name="r-tipo"][value="${tipo}"]`); if(r) r.checked = true; }
   $('#r-reps').innerHTML = ''; addRep(); regTotals(); $('#r-err').hidden = true;
   $('#r-fotos-pv') && ($('#r-fotos-pv').innerHTML = '');
-  regSync();
+  regSync(); regEstadoDef();
 }
 function regSubmit(ev){
   ev.preventDefault(); const btn = $('#r-save');
@@ -1450,18 +1453,16 @@ function regSubmit(ev){
       need(val('r-comp'), 'Selecciona el componente afectado.'); need(val('r-desc'), 'Describe qué pasó.');
       Object.assign(e, { componente:val('r-comp'), gravedad:val('r-grav'), causa:val('r-causa'), imputable:val('r-imp'), descripcion:val('r-desc') });
     }
-    if(tipo==='Reparación' || tipo==='Mantención'){
-      need(val('r-trab'), 'Describe el trabajo realizado.');
+    if(tipo==='Mantención') need(val('r-trab'), 'Describe el trabajo realizado.');
+    if(tipo==='Falla' || tipo==='Mantención'){
       const reps = readReps(), totRep = reps.reduce((a,r) => a + r.c*r.p, 0);
       const mo = numRaw(val('r-mo')), ext = numRaw(val('r-ext')), otros = numRaw(val('r-otros'));
-      Object.assign(e, { nOT:val('r-ot'), lugar:val('r-lugar'), trabajo:val('r-trab'), repuestos:reps, hh:numRaw(val('r-hh')), totRep, mo, ext, otros, total: totRep + mo + ext + otros, operativo: val('r-oper').startsWith('Sí') ? 'Sí' : 'No' });
-      if(tipo==='Reparación'){ const f = S.evs.find(x => x.id===val('r-falla')); Object.assign(e, { fallaId:f?.id || null, componente:f?.componente || null, cargo:val('r-cargo') }); if(f){ e.obra = f.obra || e.obra; e.cliente = f.cliente || e.cliente; e.solicitudId = f.solicitudId || e.solicitudId; } }
-      else e.tipoMant = val('r-tmant');
+      Object.assign(e, { nOT:val('r-ot'), lugar:val('r-lugar'), trabajo:val('r-trab'), repuestos:reps, hh:numRaw(val('r-hh')), totRep, mo, ext, otros, total: totRep + mo + ext + otros, operativo: e.estado==='Funcionando' ? 'Sí' : 'No' });
+      if(tipo==='Mantención') e.tipoMant = val('r-tmant');
     }
-    if(tipo==='Inspección') e.resultado = val('r-res');
     e.fotos = await uploadPhotos('r-fotos', $('#v-registrar'), btn);
     await S.db.collection('eventos').add(e);
-    toast(`${tipo} registrada para ${i.s.codigo}`);
+    toast(`${tl(tipo)} registrada para ${i.s.codigo}`);
     regReset(true);
   });
 }
@@ -1506,7 +1507,7 @@ function renderAnalisis(){
   const ot = rep.concat(man);
   const gRep = ot.reduce((a,e) => a + numRaw(e.totRep), 0), gMo = ot.reduce((a,e) => a + numRaw(e.mo) + numRaw(e.ext) + numRaw(e.otros), 0);
   const cobrar = rep.filter(e => e.cargo==='Sí').reduce((a,e) => a + numRaw(e.total), 0);
-  const imp = fall.filter(f => f.imputable==='Sí, cliente').length;
+  const imp = fall.filter(f => (f.imputable==='Sí, cliente' || f.imputable==='Cliente')).length;
   const months = monthsRange(st);
   const byM = (list, f) => months.map(mk => list.filter(e => (e.fecha||'').startsWith(mk)).reduce((a,e) => a + f(e), 0));
 
@@ -1518,7 +1519,7 @@ function renderAnalisis(){
     .filter(r => r.f || r.r || r.m || r.rep || r.mo || r.i.ubic==='En obra').sort((a,b) => (b.rep + b.mo) - (a.rep + a.mo) || b.f - a.f);
   // por cliente
   const cl = {}; const C = n => cl[n || 'En planta / sin obra'] ||= { f:0, imp:0, vis:0, g:0, cob:0 };
-  fall.forEach(f => { const c = C(f.cliente); c.f++; if(f.imputable==='Sí, cliente') c.imp++; });
+  fall.forEach(f => { const c = C(f.cliente); c.f++; if(f.imputable==='Sí, cliente' || f.imputable==='Cliente') c.imp++; });
   evs.filter(e => VISIT_TYPES.includes(e.tipo)).forEach(e => C(e.cliente).vis++);
   ot.forEach(e => { const c = C(e.cliente); c.g += numRaw(e.total); if(e.cargo==='Sí') c.cob += numRaw(e.total); });
   // por vendedor (solicitudes creadas en el periodo)
